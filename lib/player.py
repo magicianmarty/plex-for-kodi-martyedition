@@ -1,0 +1,3350 @@
+from __future__ import absolute_import
+import base64
+import json
+import threading
+import six
+import re
+import os
+import random
+import uuid
+from functools import wraps
+
+from kodi_six import xbmc
+from kodi_six import xbmcgui
+from iso639 import languages
+from . import backgroundthread
+from . import kodijsonrpc
+from . import colors
+from .windows import seekdialog, windowutils, blackoutdialog
+from . import util
+from . import seamless_branching
+from .language_util import getNativeLanguages, resolveLanguage
+from plexnet import plexplayer
+from plexnet import plexapp
+from plexnet import plexstream as plexstreamModule
+from plexnet import signalsmixin
+from plexnet import util as plexnetUtil
+from six.moves import range
+
+FIVE_MINUTES_MILLIS = 300000
+
+# Fastseek (CoreELEC p3i T4+ feature, coreelec.amlogic.fastseek, default ON)
+# snaps playback to a keyframe instead of decoding to the exact target, so
+# after a perfectly successful seek the player time can sit up to one GOP
+# length from the requested SOS -- on EITHER side. It usually lands at-or-
+# before the target (undershoot), but long-GOP WEB-DL/streaming can also put
+# the first decodable keyframe past it (overshoot, ~3s+ on NF H.265 DV). So
+# the absolute-SOS landing safeguard accepts up to ~10s of slack symmetrically.
+# The cases that must NOT be accepted are still caught: a dropped seek (display
+# reset around AVStarted) leaves player time ~= opened position, a huge
+# undershoot far outside this window. And re-seeking the same absolute target
+# can never reduce a keyframe overshoot anyway -- a tight upper bound only
+# churns ("replays ~1s on a loop") without ever landing, so do not reuse the
+# alternate-seek window here.
+ABSSOS_LANDING_TOLERANCE_MS = 10000
+
+# Cap on absolute-SOS re-issues. Every re-seek to the same target lands on the
+# same keyframe, so once a handful have not converged, more only churn; give up
+# and keep playing from where we are rather than looping the user on ~1s.
+ABSSOS_MAX_RESEEKS = 5
+
+
+class BasePlayerHandler(object):
+    def __init__(self, player, session_id=None):
+        self.player = player
+        self.media = None
+        self.baseOffset = 0
+        self._lastDuration = 0
+        self._progressHld = {}
+        self.timelineType = None
+        self.ignoreTimelines = False
+        self.queuingNext = False
+        self.queuingSpecific = False
+        self.playQueue = None
+        self.sessionID = session_id
+        self.playbackID = None
+        self.isMapped = False
+        self.currentlyPlaying = None
+        self.reused = False
+
+    def onAVChange(self):
+        pass
+
+    def onAVStarted(self):
+        pass
+
+    def onPrePlayStarted(self):
+        pass
+
+    def onPlayBackStarted(self):
+        pass
+
+    def onPlayBackPaused(self):
+        pass
+
+    def onPlayBackResumed(self):
+        pass
+
+    def onPlayBackStopped(self):
+        pass
+
+    def onPlayBackEnded(self):
+        pass
+
+    def onPlayBackSeek(self, stime, offset):
+        pass
+
+    def onPlayBackFailed(self):
+        pass
+
+    def onVideoWindowOpened(self):
+        pass
+
+    def onVideoWindowClosed(self):
+        pass
+
+    def onVideoOSD(self):
+        pass
+
+    def onSeekOSD(self):
+        pass
+
+    def onMonitorInit(self):
+        pass
+
+    def tick(self):
+        pass
+
+    def close(self):
+        pass
+
+    def setSubtitles(self, *args, **kwargs):
+        pass
+
+    def getIntroOffset(self, offset=None, setSkipped=False):
+        pass
+
+    def skipMarkersBefore(self, offset):
+        pass
+
+    def setup(self, duration, meta, offset, bif_url, **kwargs):
+        pass
+
+    def reset(self):
+        pass
+
+    @property
+    def trueTime(self):
+        return self.baseOffset + self.player.currentTime
+
+    def getCurrentItem(self):
+        if self.player.playerObject:
+            return self.player.playerObject.item
+        return None
+
+    def shouldSendTimeline(self, item):
+        return item.ratingKey and not item.isExtra and item.getServer()
+
+    def currentDuration(self):
+        if self.player.playerObject and self.player.isPlaying():
+            try:
+                self._lastDuration = int(self.player.getTotalTime() * 1000)
+                return self._lastDuration
+            except RuntimeError:
+                pass
+
+        return self._lastDuration
+
+    def onKodiExit(self, *args, **kwargs):
+        if util.MONITOR:
+            util.MONITOR.off("system.exit", self.onKodiExit)
+
+        try:
+            util.DEBUG_LOG("{}: onKodiExit", self.__class__.__name__)
+            self.updateNowPlaying(state=self.player.STATE_STOPPED, overrideChecks=True)
+            self.ignoreTimelines = True
+            # kill previous timeline data
+            plexapp.util.APP.nowplayingmanager.reset()
+        except:
+            pass
+
+    def updateNowPlaying(self, refreshQueue=False, t=None, state=None, overrideChecks=False):
+        if self.ignoreTimelines:
+            util.DEBUG_LOG("UpdateNowPlaying: ignoring timeline as requested")
+            return
+
+        item = self.getCurrentItem()
+        if not item:
+            return
+
+        if not self.shouldSendTimeline(item):
+            return
+
+        try:
+            player_time_str = self.player.getTime() if self.player.playState != self.player.STATE_STOPPED else "N/A"
+        except RuntimeError:
+            player_time_str = "N/A"
+        util.DEBUG_LOG("UpdateNowPlaying: {0}, refreshQueue: {1} state: {2} (player: {5}) "
+                       "overrideChecks: {3} time: {4} (player: {6})"
+                       .format(item.ratingKey,
+                               refreshQueue,
+                               state,
+                               overrideChecks,
+                               t,
+                               self.player.playState,
+                               player_time_str))
+
+        state = state or self.player.playState
+
+        obj = item.choice
+
+        # Ignore sending timelines for multi-part media with no duration
+        if obj and obj.part and obj.part.duration.asInt() == 0 and obj.media.parts and len(obj.media.parts) > 1:
+            util.LOG("Timeline not supported: the current part doesn't have a valid duration")
+            return
+
+        # if we've been called explicitly with a time, honor
+        force_time = t is not None
+        _time = max(t or int(self.trueTime * 1000), 0)
+
+        # self.trigger("progress", [m, item, time])
+
+        if refreshQueue and self.playQueue:
+            self.playQueue.refreshOnTimeline = True
+
+        playbackTime = 0
+        if getattr(self, "dialog", None) and self.dialog.playbackTime:
+            playbackTime = self.dialog.playbackTime
+
+        data = plexnetUtil.AttributeDict({
+            "key": str(item.key),
+            "ratingKey": str(item.ratingKey),
+            "guid": str(item.guid),
+            "url": str(item.url),
+            "duration": item.duration.asInt(),
+            "playbackTime": str(playbackTime),
+            "additional_params": {
+                'hasMDE': 1,
+                'X-Plex-Client-Profile-Name': 'Generic',
+                'X-Plex-Client-Identifier': item.settings.getGlobal('clientIdentifier'),
+                'X-Plex-Session-Identifier': self.sessionID,
+                'X-Plex-Session-Id': self.sessionID,
+                'X-Plex-Playback-Id': self.playbackID
+                #"containerKey": str(item.container.address)
+            }
+        })
+
+        new_time_stored = plexapp.util.APP.nowplayingmanager.updatePlaybackState(
+            self.timelineType, data, state, _time, self.playQueue, duration=self.currentDuration(),
+            force=overrideChecks, force_time=force_time, server=item.server,
+            continuing=self.queuingNext or self.queuingSpecific
+        )
+
+        if new_time_stored:
+            # only update our immediate progress if we should (e.g. if updatePlaybackState reported a new time based
+            # on _time, and only if the item isn't fully watched, yet (True)
+            if not self._progressHld.get(str(item.ratingKey)) is True:
+                self._progressHld[str(item.ratingKey)] = _time
+
+    def getVolume(self):
+        return util.rpc.Application.GetProperties(properties=["volume"])["volume"]
+
+    def _setVolume(self, vlm, wait=True):
+        xbmc.executebuiltin("SetVolume({})".format(vlm), wait)
+
+    def setVolume(self, vol, *args, **kwargs):
+        self._setVolume(vol)
+
+    def sessionEnded(self):
+        self.player.sessionID = None
+
+    def prev(self):
+        return
+
+    def next(self):
+        return
+
+    def playAt(self, pos):
+        return
+
+    def hideOSD(self, **kwargs):
+        return
+
+
+class SeekPlayerHandler(BasePlayerHandler):
+    NO_SEEK = 0
+    SEEK_IN_PROGRESS = 2
+    SEEK_PLAYLIST = 3
+    SEEK_REWIND = 4
+    SEEK_POST_PLAY = 5
+
+    MODE_ABSOLUTE = 0
+    MODE_RELATIVE = 1
+
+    def __init__(self, player, session_id=None):
+        BasePlayerHandler.__init__(self, player, session_id)
+        self.dialog = None
+        self.playlist = None
+        self.playQueue = None
+        self.timelineType = 'video'
+        self.ended = False
+        self.bifURL = ''
+        self.title = ''
+        self.title2 = ''
+        self.seekOnStart = None
+        self.seekBackTo = None
+        self.seekBackToDone = False
+        self.seekingBackTo = False
+        self.unPauseAfterSeek = False
+        self.waitingForSOS = False
+        self.chapters = None
+        self.stoppedManually = False
+        self.endedManually = False
+        self.terminated = False
+        self.inBingeMode = False
+        self.skipPostPlay = False
+        self.prePlayWitnessed = False
+        self.queuingNext = False
+        self.queuingSpecific = False
+        self._progressHld = {}
+        self.useAlternateSeek = util.getSetting('use_alternate_seek2')
+        self.useResumeFix = self.useAlternateSeek
+        # raised once an absolute SeekOnStart has actually landed (or given up); the
+        # embedded-subtitle re-enable in onAVStarted waits on it so its renderer-
+        # disrupting stream switch never lands on top of an in-flight seek
+        self._absSeekSettled = True
+        self._deferAudioTrack = False
+        self._audioTrackSwitchedSOS = None
+        self.blackout = False
+        self.blackoutWasWanted = False
+        self.pbStartedSet = False
+        self.pbStartedRemoved = False
+        self.blackoutDialog = None
+        self.blackoutShown = False
+        self.skipFixForNextSeek = False
+        self.reportedSeekPlayerTime = None
+        self.pausedForSeek = False
+        self.isMapped = False
+        self.reused = False
+        self.prePlayVolume = None
+        self.reset()
+
+    def reset(self):
+        self.duration = 0
+        self.offset = 0
+        self.baseOffset = 0
+        self.seeking = self.NO_SEEK
+        self.seekOnStart = None
+        self.seekBackTo = None
+        self.seekBackToDone = False
+        self.seekingBackTo = False
+        self.waitingForSOS = False
+        self._deferAudioTrack = False
+        self._audioTrackSwitchedSOS = None
+        self._lastDuration = 0
+        self._subtitleStreamOffset = None
+        self._lastSetEmbeddedSubIdx = None
+        self.mode = self.MODE_RELATIVE
+        self.ended = False
+        self.endedManually = False
+        self.stoppedManually = False
+        self.terminated = False
+        self.prePlayWitnessed = False
+        self.queuingNext = False
+        self.queuingSpecific = False
+        self.isMapped = False
+        self.creditMarkerHit = None
+        self.skipFixForNextSeek = False
+        self.pausedForSeek = False
+        self.reportedSeekPlayerTime = None
+        self._absSeekSettled = True
+        self.blackout = False
+        self.blackoutWasWanted = False
+        self.pbStartedSet = False
+        self.pbStartedRemoved = False
+        self.blackoutShown = False
+        self.prePlayVolume = None
+
+    def setup(self, duration, meta, offset, bif_url, title='', title2='', seeking=NO_SEEK, chapters=None,
+              is_mapped=False):
+        util.MONITOR.on("system.exit", self.onKodiExit)
+        self.ended = False
+        self.baseOffset = offset / 1000.0
+        self.seeking = seeking
+        self.duration = duration
+        self._lastDuration = duration
+        self.bifURL = bif_url
+        self.title = title
+        self.title2 = title2
+        self.chapters = chapters or []
+        self.playedThreshold = plexapp.util.INTERFACE.getPlayedThresholdValue() # percentage
+        self.stoppedManually = False
+        self.inBingeMode = False
+        self.skipPostPlay = False
+        self.prePlayWitnessed = False
+        self._subtitleStreamOffset = None
+        self._lastSetEmbeddedSubIdx = None
+        self.isMapped = is_mapped
+        self.playbackID = str(uuid.uuid4())
+        self.prePlayVolume = self.getVolume()
+        if not self.blackoutDialog:
+            self.blackoutDialog = blackoutdialog.BlackoutDialog.create(show=False)
+        self.getDialog(setup=True)
+        self.dialog.setup(self.duration, meta, int(self.baseOffset * 1000), self.bifURL, self.title, self.title2,
+                          chapters=self.chapters, keepMarkerDef=seeking == self.SEEK_IN_PROGRESS, reused=self.reused)
+
+    def getDialog(self, setup=False):
+        if not self.dialog:
+            self.dialog = seekdialog.SeekDialog.create(show=False, handler=self)
+
+        return self.dialog
+
+    @property
+    def isTranscoded(self):
+        return self.mode == self.MODE_RELATIVE
+
+    @property
+    def isDirectPlay(self):
+        return self.mode == self.MODE_ABSOLUTE
+
+    @property
+    def trueTime(self):
+        if self.isTranscoded:
+            return self.baseOffset + self.player.currentTime
+        else:
+            if not self.player.playerObject:
+                return 0
+            if self.seekOnStart is not None:
+                return self.player.playerObject.startOffset + (self.seekOnStart / 1000)
+            else:
+                return self.player.currentTime + self.player.playerObject.startOffset
+
+    def shouldShowPostPlay(self):
+        if util.getUserSetting('post_play_never', False):
+            return False
+
+        # Server killed the stream — don't follow up with post-play.
+        if self.terminated:
+            return False
+
+        if self.player.video and self.player.video.isExtra:
+            return False
+
+        if self.playlist and self.playlist.TYPE == 'playlist':
+            return False
+
+        if not (self.stoppedManually or self.endedManually) and self.skipPostPlay:
+            return False
+
+        if (not util.addonSettings.postplayAlways and self._lastDuration <= FIVE_MINUTES_MILLIS)\
+                or util.addonSettings.postplayTimeout <= 0:
+            return False
+
+        return True
+
+    def showPostPlay(self):
+        if not self.shouldShowPostPlay():
+            util.DEBUG_LOG("SeekHandler: Not showing post-play")
+            return
+        util.DEBUG_LOG("SeekHandler: Showing post-play")
+
+        self.seeking = self.SEEK_POST_PLAY
+        self.hideOSD(delete=True)
+
+        self.player.trigger('post.play', video=self.player.video, playlist=self.playlist, handler=self,
+                            stoppedManually=self.stoppedManually)
+
+        self.stoppedManually = False
+
+        return True
+
+    def getIntroOffset(self, offset=None, setSkipped=False):
+        return self.getDialog().displayMarkers(onlyReturnIntroMD=True, offset=offset, setSkipped=setSkipped)
+
+    def skipMarkersBefore(self, offset):
+        return self.getDialog().displayMarkers(setMarkersSkipped=True, offset=offset)
+
+    def next(self, on_end=False):
+        # Server killed the stream — don't auto-advance into the next item.
+        if self.terminated:
+            return False
+
+        hasNext = False
+        if self.playlist:
+            hasNext = bool(next(self.playlist))
+
+        self.triggerProgressEvent()
+
+        # don't handle pre-roll extras as real media items
+        if on_end and not self.player.video.isExtra:
+            # todo: this needs to be seriously cleaned up; showPostPlay/showShowPostPlay have too much impact on things
+            #       they don't control/shouldn't control
+            if self.showPostPlay():
+                if hasNext:
+                    self.seeking = self.SEEK_PLAYLIST
+                return True
+            elif util.getUserSetting('post_play_never', False) and not self.skipPostPlay:
+                return False
+
+        if not self.playlist or self.stoppedManually or self.endedManually or (self.playlist and not hasNext):
+            return False
+
+        if on_end and util.MONITOR.tv_standby:
+            util.DEBUG_LOG("SeekHandler: TV in standby, not auto-advancing playlist")
+            return False
+
+        if hasNext:
+            self.seeking = self.SEEK_PLAYLIST
+
+        self.player.playVideoPlaylist(self.playlist, handler=self, resume=False)
+
+        return True
+
+    def prev(self):
+        if not self.playlist or not self.playlist.prev():
+            return False
+
+        self.triggerProgressEvent()
+        self.seeking = self.SEEK_PLAYLIST
+        self.player.playVideoPlaylist(self.playlist, handler=self, resume=False)
+
+        return True
+
+    def playAt(self, pos):
+        if not self.playlist or not self.playlist.setCurrent(pos):
+            return False
+
+        self.triggerProgressEvent()
+        self.seeking = self.SEEK_PLAYLIST
+        self.dialog.prepareNewPlayback(queuing_specific=True, ignore_tick=True, ignore_input=True)
+        self.player.playVideoPlaylist(self.playlist, handler=self, resume=False)
+
+        return True
+
+    def onSeekAborted(self):
+        if self.seeking:
+            self.seeking = self.NO_SEEK
+            self.player.control('play')
+
+    def showOSD(self, from_seek=False):
+        self.updateOffset()
+        if self.dialog:
+            self.dialog.update(self.offset, from_seek)
+            self.dialog.showOSD()
+
+    def hideOSD(self, delete=False):
+        util.CRON.forceTick()
+        if self.dialog:
+            self.dialog.hideOSD(closing=delete, skipMarkerFocus=True)
+            if delete:
+                d = self.dialog
+                self.dialog = None
+                if d:
+                    d.doClose(delete=delete)
+                    del d
+                    util.garbageCollect()
+
+    def seek(self, offset, settings_changed=False, seeking=SEEK_IN_PROGRESS, skip_alt_seek_fix=False):
+        util.DEBUG_LOG(
+            "SeekHandler: offset={0}, settings_changed={1}, seeking={2}, state={3}".format(offset,
+                                                                                           settings_changed,
+                                                                                           seeking,
+                                                                                           self.player.playState))
+        if offset is None:
+            return
+
+        self.offset = offset
+
+        if self.isDirectPlay and not settings_changed:
+            util.DEBUG_LOG('New absolute player offset: {0}', self.offset)
+
+            if self.player.playerObject.offsetIsValid(offset / 1000) and not self.player.isExternal:
+                if self.seekAbsolute(offset, skip_alt_seek_fix=skip_alt_seek_fix):
+                    return
+
+        self.seeking = self.SEEK_IN_PROGRESS
+
+        if self.player.playState == self.player.STATE_PAUSED:
+            self.player.pauseAfterPlaybackStarted = True
+
+        util.DEBUG_LOG('New player offset: {0}, state: {1}', self.offset, self.player.playState)
+        self.player._playVideo(offset, seeking=self.seeking, force_update=settings_changed)
+
+    def fastforward(self):
+        xbmc.executebuiltin('PlayerControl(forward)')
+
+    def rewind(self):
+        if self.isDirectPlay:
+            xbmc.executebuiltin('PlayerControl(rewind)')
+        else:
+            self.seek(max(self.trueTime - 30, 0) * 1000, seeking=self.SEEK_REWIND)
+
+    def ensureCorrectVolume(self):
+        if self.getVolume() == 1:
+            util.LOG("SeekHandler: We've detected bad volume (current: {}, desired: {})", self.getVolume(), self.prePlayVolume)
+            if self.prePlayVolume is not None and self.prePlayVolume > 1:
+                util.LOG("SeekHandler: Setting volume to: {}",self.prePlayVolume)
+                self.setVolume(self.prePlayVolume)
+            else:
+                util.LOG("SeekHandler: No valid volume stored, setting volume to: 100")
+                self.setVolume(100)
+
+    def start_blackout(self):
+        if not self.blackoutShown:
+            # set flag as early as possible as we might get called multiple times
+            self.blackoutShown = True
+            util.DEBUG_LOG('SeekHandler: Blackout')
+            self.blackoutDialog.show()
+
+            util.DEBUG_LOG('SeekHandler: Setting volume to 1.')
+            self.setVolume(1)
+
+    def stop_blackout(self):
+        if self.blackoutShown:
+            if self.prePlayVolume is not None:
+                util.DEBUG_LOG('SeekHandler: Setting volume back to {}.', self.prePlayVolume)
+                self.setVolume(self.prePlayVolume)
+
+            if self.blackoutDialog.isOpen:
+                util.DEBUG_LOG('SeekHandler: Disabling Blackout')
+                self.blackoutDialog.doClose()
+
+            self.blackout = False
+            self.blackoutShown = False
+
+        # double check for correct volume
+        self.ensureCorrectVolume()
+
+        if not self.pbStartedSet:
+            util.setGlobalBoolProperty('playback_started', True)
+            util.setGlobalBoolProperty('playback_started_event', True)
+            self.pbStartedSet = True
+        else:
+            util.setGlobalBoolProperty('playback_started_event', False)
+            self.pbStartedRemoved = True
+
+    def seekAbsolute(self, seek=None, skip_alt_seek_fix=False):
+        self.seekOnStart = seek if seek is not None else self.seekOnStart if self.seekOnStart is not None else None
+
+        if self.player.isExternal:
+            return True
+
+        if self.seekOnStart is not None:
+            seekSeconds = self.seekOnStart / 1000.0
+            try:
+                if seekSeconds >= self.player.getTotalTime():
+                    util.DEBUG_LOG("SeekAbsolute: Bad offset: {0}", seekSeconds)
+                    return False
+            except RuntimeError:  # Not playing a file
+                util.DEBUG_LOG("SeekAbsolute: runtime error")
+                return False
+
+            util.setGlobalProperty('playback_seeking', '1', wait=True)
+
+            # Some devices seem to have an issue with the self.player.seekTime function where after the seek the video
+            # will be playing, but the audio won't for a few seconds(I've seen up to 15 seconds).  Using this alternate
+            # way to seek avoids that issue.
+
+            # we only apply the fix for a significant seek, otherwise the event might not fire, and we end up with
+            # an unconsumed self.seekOnStart, which leads to never sending timeline events
+            if self.useAlternateSeek:
+                def getTime():
+                    if (util.addonSettings.coreelecSeekPreferReported and self.reportedSeekPlayerTime is not None and
+                            self.reportedSeekPlayerTime > 0):
+                        return self.reportedSeekPlayerTime / 1000.0
+                    return self.player.getTime()
+
+
+                # wait for valid player time?
+                if util.addonSettings.coreelecWaitPlayerTime1 and self.player.getTime() < 0:
+                    util.DEBUG_LOG("SeekAbsolute: Bad time: {0}, waiting for valid time", self.player.getTime())
+                    tries = 0
+                    while self.player.getTime() < 0 and tries < util.MONITOR.waitAmount(4):
+                        util.MONITOR.waitFor()
+                        tries += 1
+                    util.DEBUG_LOG("SeekAbsolute: Player time after waiting: {0}", self.player.getTime())
+
+                doPause = False
+
+                if not skip_alt_seek_fix and self.player.playState != "paused":
+                    util.DEBUG_LOG("SeekAbsolute: Pausing for seek fix (state: {})", self.player.playState)
+                    doPause = True
+
+                currentTime = getTime()
+                relativeSeekSeconds = seekSeconds - currentTime
+                self.skipFixForNextSeek = skip_alt_seek_fix
+
+                if abs(relativeSeekSeconds) > min((util.addonSettings.altseekValidSeekWindow - 500), 1000) / 1000.0:
+                    if doPause:
+                        # pause before seeking
+                        self.pausedForSeek = True
+                        # only unpause if we're currently playing
+                        if self.player.playState in (self.player.STATE_PLAYING, self.player.STATE_BUFFERING):
+                            self.unPauseAfterSeek = True
+                        self.player.control('pause')
+                        tries = 0
+                        # wait until player is actually paused before continuing
+                        while (self.player.playState in (self.player.STATE_PLAYING, self.player.STATE_BUFFERING) and
+                               tries < util.MONITOR.waitAmount(4)):
+                            util.MONITOR.waitFor()
+                            tries += 1
+
+                    self.reportedSeekPlayerTime = None
+                    util.DEBUG_LOG("SeekAbsolute: Relative-seeking to offset: {0}, current time: {1}, relative seek: {2}".format(
+                        seekSeconds, currentTime, relativeSeekSeconds))
+                    util.MONITOR.waitFor(0.25)
+                    xbmc.executebuiltin('Seek({})'.format(relativeSeekSeconds))
+                else:
+                    util.DEBUG_LOG(
+                        "SeekAbsolute: Not relative-seeking to offset: {0}, as offset diff is too small ({1}), current time: {2}. Resetting seekOnStart".format(
+                            seekSeconds, relativeSeekSeconds, currentTime))
+                    self.seekOnStart = None
+                    self.seekBackTo = None
+                    self.seekingBackTo = False
+                    if doPause:
+                        self.player.control('play')
+                    if self.blackout:
+                        self.stop_blackout()
+            else:
+                # arm the settle gate: the embedded-subtitle re-enable will hold off its
+                # stream switch until onPlayBackSeek confirms this seek actually landed.
+                # Skip the entire seek-back-on-start lifecycle: the forward leg has
+                # seekBackTo set, the back leg has seekingBackTo set (seekBackTo is already
+                # nulled by then). SBOS is a non-resume flow -- there is no resume point to
+                # protect -- so arming the gate would only couple the subtitle close/reopen
+                # (and its display reset) to SBOS's forward->back motion and break its resync.
+                if self.seekBackTo is None and not self.seekingBackTo:
+                    self._absSeekSettled = False
+                util.DEBUG_LOG("SeekAbsolute: Seeking to {0}", self.seekOnStart)
+                self.player.seekTime(seekSeconds)
+        return True
+
+    def onAVChange(self):
+        util.DEBUG_LOG('SeekHandler: onAVChange')
+        if self._audioTrackSwitchedSOS is not None:
+            try:
+                actual_time = self.player.getTime()
+            except RuntimeError:
+                actual_time = -1
+            sos, retries = self._audioTrackSwitchedSOS
+            if actual_time < 10:
+                if retries >= 5:
+                    self._audioTrackSwitchedSOS = None
+                    util.DEBUG_LOG("SeekHandler: onAVChange: Position reset persists after {} retries "
+                                   "(actual: {}, expected: {}), giving up", retries, actual_time, sos / 1000.0)
+                else:
+                    self._audioTrackSwitchedSOS = (sos, retries + 1)
+                    util.DEBUG_LOG("SeekHandler: onAVChange: Position reset detected after audio track switch "
+                                   "(actual: {}, expected: {}, retry: {}), re-seeking",
+                                   actual_time, sos / 1000.0, retries + 1)
+                    self.seekAbsolute(sos)
+                return
+            elif actual_time >= sos / 1000.0 * 0.5:
+                # position looks fine, disarm
+                self._audioTrackSwitchedSOS = None
+                util.DEBUG_LOG("SeekHandler: onAVChange: Position OK after audio track switch "
+                               "(actual: {}, expected: {}), disarming", actual_time, sos / 1000.0)
+
+        if self.blackoutWasWanted and self.blackout:
+            # this might occur even before AVStarted
+            self.start_blackout()
+        else:
+            if self.pbStartedSet:
+                util.MONITOR.waitFor(0.1)
+                util.setGlobalBoolProperty('playback_started_event', False)
+                self.pbStartedRemoved = True
+
+        self.player.trigger('changed.video')
+        if self.dialog:
+            self.dialog.onAVChange()
+
+    def onAVStarted(self):
+        util.DEBUG_LOG('SeekHandler: onAVStarted')
+        if self.blackoutWasWanted and self.blackout:
+            self.start_blackout()
+        # we might've hit onAVChange before hitting onAVStarted
+        elif self.blackoutWasWanted and not self.blackout and self.pbStartedSet:
+            if not self.pbStartedRemoved:
+                util.MONITOR.waitFor(0.1)
+                util.setGlobalBoolProperty('playback_started_event', False)
+                self.pbStartedRemoved = True
+        else:
+            if not self.pbStartedSet and not self.pbStartedRemoved:
+                util.setGlobalBoolProperty('playback_started', True)
+                util.setGlobalBoolProperty('playback_started_event', True)
+                self.pbStartedSet = True
+                util.MONITOR.waitFor(0.1)
+                util.setGlobalBoolProperty('playback_started_event', False)
+                self.pbStartedRemoved = True
+
+        self.player.trigger('started.video')
+
+        # fixme: move below embedded subtitle check?
+        if self.isDirectPlay:
+            # handle seekOnStart/resume
+            self.seekAbsolute()
+
+        if self.dialog:
+            self.dialog.onAVStarted()
+
+        self.ignoreTimelines = False
+
+        # check if embedded subtitle was set correctly
+        if self.isDirectPlay and self.player.video and self.player.video.current_subtitle_is_embedded:
+            # The resume SeekOnStart (player.seekTime) issued just above is async. Any
+            # subtitle-stream manipulation below (the mismatch re-apply, or the kernel-fix
+            # close/reopen) disrupts the renderer; doing it while the seek is still
+            # in flight clobbers it (AddPacketsRenderer timeout -> display reset ->
+            # playback restarts at 0). Wait until onPlayBackSeek confirms the seek has
+            # actually landed (real player position converged on the target, not the
+            # masked reported time) before touching the subtitle stream. ~15s ceiling
+            # to outlast a variable display reset; waitForAbort yields so onPlayBackSeek
+            # can run and raise the flag.
+            waited = 0
+            while not self._absSeekSettled and waited < 150 and not util.MONITOR.abortRequested():
+                util.MONITOR.waitForAbort(0.1)
+                waited += 1
+            if not self._absSeekSettled:
+                util.LOG("onAVStarted: seek-settle gate timed out before embedded subtitle "
+                         "re-apply; proceeding anyway")
+
+            got_player = False
+            tries = 0
+            while not got_player and tries < 50 and not util.MONITOR.abortRequested():
+                try:
+                    playerID = kodijsonrpc.rpc.Player.GetActivePlayers()[0]["playerid"]
+                    got_player = True
+                    currIdx = kodijsonrpc.rpc.Player.GetProperties(playerid=playerID, properties=['currentsubtitle'])[
+                        'currentsubtitle'].get('index', None)
+                    target = self.player.video._current_subtitle_idx + self.subtitleStreamOffset
+                    if currIdx != target:
+                        util.LOG("Embedded Subtitle index was incorrect ({}), setting to: {}".
+                                 format(currIdx, target))
+                        self.dialog.setSubtitles()
+                    elif util.CE_NEEDS_EMBEDDED_SEEKBACK:
+                        # Index already correct on Kodi side but rendering may not be engaged —
+                        # setSubtitleStream() called from onPrePlay/onPlayBackStarted runs before
+                        # Kodi has opened the file. On builds without the kernel fix, the seekback
+                        # in dialog.setSubtitles is what forces Kodi to engage subtitle rendering.
+                        util.DEBUG_LOG("Embedded subtitle index already correct — re-applying via "
+                                       "dialog to trigger seekback forcing function")
+                        self.dialog.setSubtitles()
+                    else:
+                        # Kernel-fix build (CE_NEEDS_EMBEDDED_SEEKBACK=False): the seekback that
+                        # normally wakes rendering doesn't fire. Force Kodi to close+reopen the
+                        # subtitle player by switching off then back to the target — the close/
+                        # reopen of the subtitle stream is what actually engages rendering when
+                        # the early setSubtitleStream call set the index without activating it.
+                        util.DEBUG_LOG("Embedded subtitle index already correct — forcing stream "
+                                       "switch to engage rendering (kernel-fix build)")
+                        self.player.setSubtitleStream(-1)
+                        util.MONITOR.waitForAbort(0.05)
+                        self.player.setSubtitleStream(target)
+                        self.player.showSubtitles(True)
+                except IndexError:
+                    util.DEBUG_LOG("Player not available yet, retrying ({}/{})".format(tries, 50))
+                    tries += 1
+                    util.MONITOR.waitForAbort(0.1)
+                except:
+                    util.ERROR("Exception when trying to check for embedded subtitles")
+                    break
+
+    def onPrePlayStarted(self):
+        util.DEBUG_LOG('SeekHandler: onPrePlayStarted, DP: {}', self.isDirectPlay)
+        self.prePlayWitnessed = True
+        if self.isDirectPlay:
+            self.setSubtitles(do_sleep=False)
+
+    def onPlayBackStarted(self):
+        util.DEBUG_LOG('SeekHandler: onPlayBackStarted, DP: {}', self.isDirectPlay)
+
+        self.updateNowPlaying(refreshQueue=True)
+
+        if self.dialog:
+            self.dialog.onPlayBackStarted()
+
+        #if not self.prePlayWitnessed and self.isDirectPlay:
+        if self.isDirectPlay:
+            self.setSubtitles(do_sleep=False)
+            if self.reused:
+                util.DEBUG_LOG("SeekHandler: This handler was reused, make sure the right audio track is set.")
+                self.setAudioTrack()
+
+    def onPlayBackResumed(self):
+        vpsc = False
+        if self.dialog and self.dialog.videoPausedForAudioStreamChange:
+            vpsc = True
+
+        util.DEBUG_LOG('SeekHandler: onPlayBackResumed, DP: {}, ignoring (VPSC): {}', self.isDirectPlay, vpsc)
+        if not vpsc:
+            self.updateNowPlaying()
+        if self.dialog:
+            self.dialog.onPlayBackResumed()
+
+            util.CRON.forceTick()
+        # self.hideOSD()
+
+    def getVideoPlayedFac(self, ref=None):
+        return (ref if ref is not None else self.trueTime * 1000) / float(self.duration)
+
+    @property
+    def videoPlayedFac(self):
+        return self.getVideoPlayedFac()
+
+    @property
+    def playedThresholdPerc(self):
+        if not self.player.video:
+            return 90
+
+        server_thres = self.player.video.server.prefs.get("LibraryVideoPlayedThreshold", None)
+        if server_thres is None:
+            return int(self.playedThreshold)
+        return int(server_thres)
+
+    def getVideoWatched(self, ref=None):
+        """
+        0:at selected threshold percentage|1:at final credits marker position|2:at first credits marker position|3:earliest between threshold percent and first credits marker
+        :param ref:
+        :return: bool
+        """
+        if not self.player.video:
+            return False
+
+        playedAtBH = self.player.video.server.prefs.get("LibraryVideoPlayedAtBehaviour", None)
+        if playedAtBH is None:
+            playedAtBH = util.getSetting("played_threshold_behaviour")
+        playedAtBH = int(playedAtBH)
+
+        watchedByPerc = self.getVideoPlayedFac(ref=ref) >= self.playedThresholdPerc / 100.0 or self.player.isExternal
+
+        if playedAtBH == 0 or not self.player.video.has_credit_markers:
+            util.DEBUG_LOG("SeekPlayerHandler: Watched item due to percentage: {}", watchedByPerc)
+            return watchedByPerc
+        elif playedAtBH == 1 and self.creditMarkerHit == "final":
+            util.DEBUG_LOG("SeekPlayerHandler: Watched item due to final credits marker")
+            return True
+        elif playedAtBH == 2 and self.creditMarkerHit == "first":
+            util.DEBUG_LOG("SeekPlayerHandler: Watched item due to first credits marker")
+            return True
+        elif playedAtBH == 3 and (watchedByPerc or self.creditMarkerHit):
+            util.DEBUG_LOG("SeekPlayerHandler: Watched item due to percentage or credits marker")
+            return True
+        return False
+
+    @property
+    def videoWatched(self):
+        return self.getVideoWatched()
+
+    def triggerProgressEvent(self):
+        if not self.player.video or self.player.video.isExtra:
+            return
+
+        rk = str(self.player.video.ratingKey)
+        if rk not in self._progressHld:
+            # progress already consumed
+            return
+
+        gprk = None
+        prk = None
+        if self.player.video.type == "episode":
+            prk = self.player.video.parentRatingKey
+            gprk = self.player.video.grandparentRatingKey
+
+        vw = self.getVideoWatched(
+            ref=self._progressHld[rk] if self._progressHld[rk] > self.trueTime * 1000 else None)
+        if vw:
+            self._progressHld[rk] = True
+        self.player.trigger('video.progress', data=(gprk, prk, rk, vw or self._progressHld[rk]))
+
+    def getProgressForItem(self, rk, default=0):
+        return self._progressHld.get(rk, default)
+
+    def onPlayBackStopped(self):
+        util.DEBUG_LOG('SeekHandler: onPlayBackStopped - '
+                       'Seeking={0}, QueueingNext={1}, BingeMode={2}, StoppedManually={3}, SkipPostPlay={4}'
+                       .format(self.seeking, self.queuingNext, self.inBingeMode, self.stoppedManually,
+                               self.skipPostPlay))
+
+        if self.dialog:
+            self.dialog.onPlayBackStopped()
+
+        if self.queuingNext or self.queuingSpecific:
+            if self.isDirectPlay and self.playlist and (self.playlist.hasNext() or self.queuingSpecific):
+                self.hideOSD(delete=True)
+            # fixme: the on_end value is a hack here, we should rename or use a different parameter
+            if self.queuingNext:
+                if self.next(on_end=not self.skipPostPlay):
+                    return
+
+        if self.seeking not in (self.SEEK_IN_PROGRESS, self.SEEK_REWIND):
+            if not self.queuingSpecific:
+                self.updateNowPlaying()
+            self.triggerProgressEvent()
+
+            if not self.queuingSpecific:
+                # show post play if possible, if an item has been watched (90% by Plex standards)
+                if self.seeking != self.SEEK_PLAYLIST and self.duration:
+                    util.DEBUG_LOG("Player - played-threshold: {}%/{}%",
+                                   int(self.videoPlayedFac * 100), int(self.playedThresholdPerc))
+                    if not (self.stoppedManually or self.endedManually):
+                        # the stop didn't come from our own UI (CEC TV-standby, JSON-RPC
+                        # remote, ...); show post-play, but don't auto-advance
+                        util.DEBUG_LOG("SeekHandler: external stop, disabling post-play auto-advance")
+                        self.stoppedManually = True
+                    if self.videoWatched and self.next(on_end=True):
+                        return
+
+        if (self.seeking not in (self.SEEK_IN_PROGRESS, self.SEEK_PLAYLIST) or
+                (self.seeking == self.SEEK_PLAYLIST and (self.stoppedManually or self.endedManually))):
+            self.hideOSD(delete=True)
+            self.sessionEnded()
+
+    def onPlayBackEnded(self):
+        util.DEBUG_LOG('SeekHandler: onPlayBackEnded - Seeking={0}, External={1}',
+                       self.seeking, self.player.isExternal)
+
+        if self.dialog:
+            self.dialog.onPlayBackEnded()
+
+        if self.player.playerObject.hasMoreParts():
+            self.updateNowPlaying(state=self.player.STATE_PAUSED)  # To for update after seek
+            self.seeking = self.SEEK_IN_PROGRESS
+            self.player._playVideo(self.player.playerObject.getNextPartOffset(), seeking=self.seeking)
+            return
+
+        self.updateNowPlaying()
+        self.triggerProgressEvent()
+
+        if self.queuingNext:
+            util.DEBUG_LOG('SeekHandler: onPlayBackEnded - event ignored')
+            return
+
+        self.stoppedManually = False if not self.player.isExternal else True
+
+        if self.playlist and self.playlist.hasNext():
+            self.queuingNext = True
+        if self.next(on_end=True):
+            return
+        else:
+            self.queuingNext = False
+
+        if not self.ended:
+            if self.seeking != self.SEEK_PLAYLIST:
+                self.hideOSD()
+
+            if self.seeking not in (self.SEEK_IN_PROGRESS, self.SEEK_PLAYLIST) or self.player.isExternal:
+                self.sessionEnded()
+
+    def onPlayBackPaused(self):
+        if self.pausedForSeek:
+            return
+
+        vpsc = False
+        if self.dialog and self.dialog.videoPausedForAudioStreamChange:
+            vpsc = True
+
+        util.DEBUG_LOG('SeekHandler: onPlayBackPaused, DP: {}, ignoring (VPSC): {}', self.isDirectPlay, vpsc)
+        if not vpsc:
+            self.updateNowPlaying()
+        if self.dialog:
+            self.dialog.onPlayBackPaused()
+
+    def onPlayBackSeek(self, stime, offset):
+        def seekBackToStart():
+            util.DEBUG_LOG("SeekHandler: onPlayBackSeek: Seeking back to: {} after: {} ms",
+                           self.seekBackTo, util.addonSettings.seekbackonstartDelay)
+            # Add delay before seeking back to give decoders time to stabilize
+            # This is especially important for VC-1 hardware decoding
+            util.MONITOR.waitFor(util.addonSettings.seekbackonstartDelay / 1000.0)
+            try:
+                to = self.seekBackTo
+                self.seekBackTo = None
+                self.seekingBackTo = True
+                self.waitingForSOS = False
+                self.unPauseAfterSeek = True
+                #self.reportedSeekPlayerTime = None
+                # seekBackTo is a part-relative target ("X ms into the current part"), the same
+                # frame the forward leg uses via seekAbsolute(). Routing it through the global
+                # seek() instead makes a sub-startOffset target (e.g. 50ms) re-resolve into the
+                # *previous* part on multi-part items (part 2's startOffset > 0) -> reload loop.
+                # Seek part-relative so we stay within the current part.
+                self.seekAbsolute(to)
+            finally:
+                self.ignoreTimelines = False
+
+        def getTime(force_player=False):
+            """
+            Return the current player time in seconds.
+            :param force_player: Return the current player time in seconds.
+            :return: seconds
+            """
+            try:
+                t = self.player.getTime()
+                if force_player:
+                    return t
+                if util.addonSettings.coreelecSeekPreferReported and self.reportedSeekPlayerTime is not None and self.reportedSeekPlayerTime > 0:
+                    util.DEBUG_LOG("SeekHandler: Using reported seek time for getTime: {} ({})", self.reportedSeekPlayerTime, t)
+                    return self.reportedSeekPlayerTime / 1000.0
+                # it's possible that we got a wrong current time from the player, but a correct time from the seek event
+                if (self.reportedSeekPlayerTime is not None and self.reportedSeekPlayerTime > 0 and
+                        (self.reportedSeekPlayerTime > t * 1000 + 50000 or self.reportedSeekPlayerTime < t * 1000 - 50000)):
+                    util.DEBUG_LOG("SeekHandler: onPlayBackSeek: Massive deviation of reported time vs. player time. "
+                                   "Using reported time. (Reported: {}, Player: {})", self.reportedSeekPlayerTime, t)
+                    return self.reportedSeekPlayerTime / 1000.0
+                return t
+            except RuntimeError:
+                # kodi isn't playing anything
+                util.LOG("SeekHandler: onPlayBackSeek: Called without playing player, exiting.")
+                return -1
+
+        self.reportedSeekPlayerTime = stime
+        if self.waitingForSOS:
+            util.DEBUG_LOG("SeekHandler: onPlayBackSeek: currently waiting for seekOnStart, not reacting: {} "
+                           "(reported time, player time: {}, {})", self.seekOnStart, self.reportedSeekPlayerTime, getTime(force_player=True))
+            return
+        util.DEBUG_LOG('SeekHandler: onPlayBackSeek - {0}, {1}, {2}', stime, offset, self.seekOnStart)
+
+        # store original seekOnStart as it can change during seek attempts
+        origSOS = self.seekOnStart
+        useSeekFix = self.useResumeFix and not self.skipFixForNextSeek
+        appliedOffset = None
+
+        if self.dialog:
+            self.dialog.onPlayBackSeek(stime, offset)
+
+        if self.dialog and self.isDirectPlay and origSOS is not None:
+            seekWindow = util.addonSettings.altseekValidSeekWindow
+            if 0 <= origSOS <= 200 or self.seekBackTo is not None:
+                # we're seeking near 0 offset, or a time-critical seekBackTo, be a little harsher about the valid window
+                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: Using smaller seek window as we're seeking near to 0 or "
+                               "seeking back to start")
+                seekWindow = min(1000, util.addonSettings.altseekValidSeekWindow / 2.0)
+
+            withinSOSLow = origSOS - seekWindow * 2
+            # allow the upper bounds to move because we might be playing (and moving forward)
+            # fixme: this isn't true anymore as we now pause while seeking
+            withinSOSHigh = origSOS + seekWindow + min(seekWindow, 500)
+
+            tries = 0
+            while not self.player.isPlayingVideo() and tries < 100 and not util.MONITOR.abortRequested():
+                util.MONITOR.waitForAbort(0.1)
+                tries += 1
+
+            p_time = getTime()
+            if p_time is None:
+                util.LOG("SeekHandler: onPlayBackSeek: Called without playing player, exiting.")
+                return
+
+            if tries:
+                # move SOS upper boundary a little
+                withinSOSHigh += 100 * tries
+                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: Moving SOS boundary up by {}ms ({})", 100 * tries, withinSOSHigh)
+
+            util.DEBUG_LOG("SeekHandler: onPlayBackSeek: Playing: {}, Time: {}", self.player.isPlayingVideo(), p_time)
+
+            sosDiff = origSosDiff = abs(origSOS - p_time * 1000)
+
+            SOSSuccess = True
+
+            # this block should only be entered with alternate seek enabled
+            if useSeekFix and (p_time * 1000 < withinSOSLow or p_time * 1000 > withinSOSHigh):
+                # on certain problematic devices such as CoreELEC and LG, we advise to use the alternate seek fix, which
+                # uses a relative Kodi seek instead of the native absolute one. This can lead to onSeek being triggered
+                # without the player having actually seeked. In this case we need to monitor the player for a while and
+                # re-seek if necessary.
+                if useSeekFix and sosDiff > 500:
+                    util.DEBUG_LOG("SeekHandler: onPlayBackSeek: resumeFix: enabling waiting for seekOnStart "
+                                   "(low: {}, high: {}, range: {}, time: {}, diff: {}, sos: {})", withinSOSLow, withinSOSHigh, seekWindow, p_time, sosDiff, origSOS)
+                    self.waitingForSOS = True
+                    # checking infoLabel Player.Seeking would be the better solution here, but we're dealing with stuff like
+                    # CoreELEC, which doesn't necessarily properly honor this
+                    withinSOSHigh += 250
+                    util.MONITOR.waitForAbort(0.25)
+
+                # player time can change at any point as we're waiting for the seek to apply
+                p_time = getTime()
+                if p_time is None:
+                    util.LOG("SeekHandler: onPlayBackSeek: Called without playing player, exiting.")
+                    return
+
+                sosDiff = abs(origSOS - p_time * 1000)
+
+                needsReSeek = False
+                if useSeekFix and sosDiff > 1000:
+                    # seekOnStart might've changed to 0
+                    if self.player.isPlayingVideo() and (getTime() * 1000 < withinSOSLow or getTime() * 1000 > withinSOSHigh):
+                        # special case for CE and start seek back
+                        # note: you will see this block of code multiple times. We're in relative seek mode here and the
+                        # CE handlers are possibly "partially" playing in the background without telling us up to this
+                        # point.
+                        if self.seekBackTo is not None and getTime() * 1000 > origSOS:
+                            util.DEBUG_LOG("SeekHandler: onPlayBackSeek: seekBackTo #1: we've reached past our "
+                                           "initial seek point ({}, {}), commence seeking to start",
+                                           getTime(), origSOS)
+                            # we've reached our target without explicitly seeking; seek back to 0
+                            self.skipFixForNextSeek = False
+                            seekBackToStart()
+                            return
+
+                        util.DEBUG_LOG("SeekHandler: onPlayBackSeek: resumeFix: not there, yet, re-seeking: "
+                                       "(low: {}, high: {}, range: {}, time: {}, diff: {})", withinSOSLow, withinSOSHigh, seekWindow, getTime(), sosDiff)
+                        needsReSeek = True
+                        self.seekAbsolute(origSOS)
+                    else:
+                        if self.player.isPlayingVideo():
+                            util.DEBUG_LOG("SeekHandler: onPlayBackSeek: resumeFix: we've reached {}", origSOS)
+                        else:
+                            util.DEBUG_LOG(
+                                "OnPlayBackSeek: SeekOnStart: Player not playing video anymore during initial evaluation")
+                            if self.blackout:
+                                self.stop_blackout()
+                            return
+                else:
+                    util.DEBUG_LOG("SeekHandler: onPlayBackSeek: adjusted SOS is now less than 1000ms, not triggering seek (player: {}, low: {}, high: {})", p_time, withinSOSLow, withinSOSHigh)
+
+                # player time can change at any point as we're waiting for the seek to apply
+                p_time = getTime()
+                if p_time is None:
+                    util.LOG("SeekHandler: onPlayBackSeek: Called without playing player, exiting.")
+                    return
+
+                sosDiff = abs(origSOS - p_time * 1000)
+                if self.player.isPlayingVideo() and useSeekFix and sosDiff > 500 and needsReSeek:
+                    seekWait = util.addonSettings.coreelecResumeSeekWait2
+                    withinSOSHigh += seekWait
+                    util.MONITOR.waitForAbort(seekWait / 1000.0)
+
+                    if self.player.isPlayingVideo():
+                        util.DEBUG_LOG("OnPlayBackSeek: SeekOnStart: "
+                                       "Expecting to be within {}/+{} seconds of {}, currently at: {}, CoreELEC resume seek wait: {}ms",
+                                       (withinSOSLow - origSOS) / 1000, (withinSOSHigh - origSOS) / 1000, origSOS, getTime(), seekWait)
+                    else:
+                        util.DEBUG_LOG("OnPlayBackSeek: SeekOnStart: Player not playing video while waiting for seek")
+                        return
+
+                    # special case for CE and start seek back
+                    if self.seekBackTo is not None and getTime() * 1000 > origSOS:
+                        util.DEBUG_LOG("SeekHandler: onPlayBackSeek: seekBackTo #2: we've reached past our "
+                                       "initial seek point ({}, {}), commence seeking to start",
+                                       getTime(), origSOS)
+                        # we've reached our target without explicitly seeking; seek back to 0
+                        self.skipFixForNextSeek = False
+                        seekBackToStart()
+                        return
+
+                    tries = 0
+                    max_tries = int(10000 / seekWait)
+                    while (self.player.isPlayingVideo() and (getTime() * 1000 < withinSOSLow or getTime() * 1000 > withinSOSHigh)) and tries < max_tries:
+                        util.DEBUG_LOG("OnPlayBackSeek: SeekOnStart: Not there, yet, "
+                                       "seeking again ({}, lower: {}, higher: {}, {})", origSOS, withinSOSLow, withinSOSHigh, getTime() * 1000)
+                        if util.MONITOR.abortRequested():
+                            util.DEBUG_LOG("OnPlayBackSeek: SeekOnStart: Abort requested while waiting for seek")
+                            SOSSuccess = False
+                            if self.blackout:
+                                self.stop_blackout()
+                            break
+                        elif not self.player.isPlayingVideo():
+                            util.DEBUG_LOG("OnPlayBackSeek: SeekOnStart: Player not playing video while waiting for seek")
+                            self.skipFixForNextSeek = False
+                            if self.blackout:
+                                self.stop_blackout()
+                            return
+
+                        withinSOSHigh += 250
+                        util.MONITOR.waitForAbort(0.25)
+
+                        # special case for CE and start seek back
+                        if self.seekBackTo is not None and getTime() * 1000 > origSOS:
+                            util.DEBUG_LOG("SeekHandler: onPlayBackSeek: seekBackTo #3: we've reached past our "
+                                           "initial seek point ({}, {}), commence seeking to start",
+                                           getTime(), origSOS)
+                            # we've reached our target without explicitly seeking; seek back to 0
+                            self.skipFixForNextSeek = False
+                            seekBackToStart()
+                            return
+
+                        self.seekAbsolute(origSOS)
+
+                        tries += 1
+                        withinSOSHigh += seekWait
+                        util.MONITOR.waitForAbort(seekWait / 1000.0)
+                    if tries >= max_tries:
+                        util.DEBUG_LOG("OnPlayBackSeek: SeekOnStart: Couldn't properly seek on start within ~10 seconds.")
+                        SOSSuccess = False
+                    else:
+                        if not SOSSuccess:
+                            util.DEBUG_LOG("OnPlayBackSeek: Seek on start failed")
+                        else:
+                            util.DEBUG_LOG("OnPlayBackSeek: Seeked on start to: {0}", origSOS)
+            elif useSeekFix:
+                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: resumeFix: current time already within range ({}, {}, {})", p_time * 1000, withinSOSLow, withinSOSHigh)
+
+                # Verify with actual player time after a brief settle. A display mode switch
+                # (resolution/refresh rate change) can cause the seek callback to report
+                # success while the player internally reverts to ~0. The reported seek time
+                # masks this in getTime(), so check the real player position.
+                #
+                # Only detect the mode-switch regression specifically: player near zero when
+                # targeting a large offset. Do NOT flag normal keyframe-aligned variance
+                # (which can be 10+ seconds for Blu-ray content with large GOP sizes).
+                #
+                # On failure, poll instead of re-seeking in a loop — relative seeks can
+                # accumulate during a mode switch, doubling the offset past end of file.
+                if origSOS > 5000 and self.player.isPlayingVideo():
+                    util.MONITOR.waitForAbort(0.35)
+                    actual_time = getTime(force_player=True)
+                    if actual_time >= 0 and actual_time < 2.0:
+                        util.DEBUG_LOG("SeekHandler: onPlayBackSeek: resumeFix: post-seek verification detected "
+                                       "mode-switch revert (actual: {}, expected: {}), waiting for seek to land",
+                                       actual_time, origSOS / 1000.0)
+                        self.reportedSeekPlayerTime = None
+                        self.waitingForSOS = True
+                        verified = False
+                        for verify_try in range(12):
+                            util.MONITOR.waitForAbort(0.5)
+                            if not self.player.isPlayingVideo() or util.MONITOR.abortRequested():
+                                break
+                            actual_time = getTime(force_player=True)
+                            if actual_time >= 2.0:
+                                verified = True
+                                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: resumeFix: post-seek verification OK "
+                                               "after {} polls (actual: {}, expected: {})",
+                                               verify_try + 1, actual_time, origSOS / 1000.0)
+                                break
+                            util.DEBUG_LOG("SeekHandler: onPlayBackSeek: resumeFix: post-seek verification pending "
+                                           "(actual: {}, expected: {}, poll: {})",
+                                           actual_time, origSOS / 1000.0, verify_try + 1)
+                        self.waitingForSOS = False
+
+                        if not verified and self.player.isPlayingVideo():
+                            # Mode switch should be complete by now (~6s). Issue one final re-seek.
+                            util.DEBUG_LOG("SeekHandler: onPlayBackSeek: resumeFix: post-seek verification FAILED "
+                                           "after polling, re-seeking once")
+                            self.seekAbsolute(origSOS)
+                            return
+
+            # Absolute-path SOS safeguard (alternate seek disabled).
+            # A display reset around AVStarted -- HDMI/DV mode switch, refresh-rate or
+            # HDR change, resolution-whitelist switch -- can tear down the renderer while
+            # our seekTime() is in flight, so the seek is silently dropped and playback
+            # runs from the opened position. Kodi still fires OnSeek with the requested
+            # target, and getTime()'s reportedSeekPlayerTime override reports false
+            # convergence. This isn't platform-specific: any Kodi target that resets the
+            # display on start is exposed, and the longer the reset the more reliably it
+            # swallows the seek. Verify against the REAL player time (force_player) and
+            # re-issue the absolute seek until it lands or we give up.
+            if not self.useResumeFix and self.seekBackTo is None and not self.seekingBackTo:
+                raw = getTime(force_player=True)
+                # NB: don't gate on raw >= 0 -- a small negative getTime (e.g. -0.06) is a
+                # valid "playing at the very start, seek not landed yet" reading, which is
+                # exactly what we must catch. Distance from target is the signal; the loop's
+                # isPlayingVideo() check handles genuine not-ready states.
+                raw_ms = raw * 1000
+                undershoot_ms = max(0, origSOS - raw_ms)
+                overshoot_ms = max(0, raw_ms - origSOS)
+                landed = (undershoot_ms <= ABSSOS_LANDING_TOLERANCE_MS
+                          and overshoot_ms <= ABSSOS_LANDING_TOLERANCE_MS)
+                if not landed:
+                    util.DEBUG_LOG("SeekHandler: onPlayBackSeek: absolute SOS not landed "
+                                   "(player: {}, target: {}); polling + re-seeking", raw, origSOS / 1000.0)
+                    self.waitingForSOS = True
+                    try:
+                        waited = 0
+                        last_reseek = -5
+                        reseeks = 0
+                        converged = False
+                        # ~15s ceiling backstop; ABSSOS_MAX_RESEEKS is the real limit
+                        while waited < 75 and not util.MONITOR.abortRequested():
+                            if not self.player.isPlayingVideo():
+                                util.MONITOR.waitForAbort(0.2)
+                                waited += 1
+                                continue
+                            raw = getTime(force_player=True)
+                            raw_ms = raw * 1000
+                            undershoot_ms = max(0, origSOS - raw_ms)
+                            overshoot_ms = max(0, raw_ms - origSOS)
+                            landed = (undershoot_ms <= ABSSOS_LANDING_TOLERANCE_MS
+                                      and overshoot_ms <= ABSSOS_LANDING_TOLERANCE_MS)
+                            if raw >= 0 and landed:
+                                converged = True
+                                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: absolute SOS landed "
+                                               "at {} (target {})", raw, origSOS / 1000.0)
+                                break
+                            # re-issue ~every second; attempts during the reset window are
+                            # dropped, a later one (after the reset completes) sticks
+                            if waited - last_reseek >= 5:
+                                if reseeks >= ABSSOS_MAX_RESEEKS:
+                                    util.DEBUG_LOG("SeekHandler: onPlayBackSeek: giving up after {} "
+                                                   "re-seeks (player at {}, target {})",
+                                                   reseeks, raw, origSOS / 1000.0)
+                                    break
+                                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: re-seeking to {} "
+                                               "(player at {}, attempt {})", origSOS / 1000.0, raw, reseeks + 1)
+                                self.player.seekTime(origSOS / 1000.0)
+                                last_reseek = waited
+                                reseeks += 1
+                            util.MONITOR.waitForAbort(0.2)
+                            waited += 1
+                        if not converged:
+                            SOSSuccess = False
+                            util.LOG("SeekHandler: onPlayBackSeek: absolute SOS did not converge "
+                                     "after polling (target: {}); resume position may be wrong",
+                                     origSOS / 1000.0)
+                    finally:
+                        self.waitingForSOS = False
+                # seek has landed (or we gave up) — release the embedded-subtitle re-enable
+                self._absSeekSettled = True
+
+            # should not be necessary due to other recent changes to dialog persistence, but it doesn't hurt, either
+            if self.dialog:
+                if SOSSuccess and ((useSeekFix and origSosDiff > 500) or not useSeekFix):
+                    appliedOffset = max(int(getTime() * 1000) if useSeekFix else origSOS, 0)
+                    util.DEBUG_LOG("SeekHandler: onPlayBackSeek: Setting dialog offset to {} "
+                                   "(seek fix: {}, origSOSDiff: {})", appliedOffset, useSeekFix, origSosDiff)
+                    # set to current time if we succeeded, as seekOnStart could've been set to 0 in the meantime by the relative seek
+                    self.dialog.offset = appliedOffset
+                elif SOSSuccess:
+                    appliedOffset = max(int(getTime() * 1000) if useSeekFix else origSOS, 0)
+
+            if SOSSuccess:
+                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: SeekOnStart applied: {}", appliedOffset)
+            else:
+                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: SeekOnStart not successful: {}", origSOS)
+            self.waitingForSOS = False
+            self.seekOnStart = None
+            if useSeekFix and self.dialog and appliedOffset is not None:
+                self.dialog.offset = appliedOffset
+                self.dialog.selectedOffset = appliedOffset
+                self.dialog.update()
+
+            if self._deferAudioTrack and self.seekBackTo is None:
+                util.DEBUG_LOG("SeekHandler: onPlayBackSeek: Setting deferred audio track")
+                switched = self.setAudioTrack()
+                self._deferAudioTrack = False
+
+                if switched and origSOS is not None:
+                    # setAudioStream() during an active display mode switch can cause the player
+                    # position to reset or the AMLogic codec to stall when OnResetDisplay arrives.
+                    # Two recovery paths:
+                    # 1) onAVChange retry (for position-reset cases where onAVChange still fires)
+                    # 2) delayed stall check (for cases where the codec dies and no events fire)
+                    self._audioTrackSwitchedSOS = (origSOS, 0)
+                    util.DEBUG_LOG("SeekHandler: onPlayBackSeek: Audio track switched, "
+                                   "arming position reset detection (SOS: {})", origSOS)
+                    threading.Thread(target=self._audioSwitchStallCheck,
+                                     daemon=True, name='audio_switch_stall').start()
+
+        self.skipFixForNextSeek = False
+        self.updateOffset(offset=appliedOffset)
+        # self.showOSD(from_seek=True)
+
+        if self.seekingBackTo:
+            self.seekingBackTo = False
+            self.seekBackToDone = True
+
+        # seek back immediately?
+        if self.seekBackTo is not None:
+            seekBackToStart()
+            return
+        else:
+            self.reportedSeekPlayerTime = None
+
+            util.setGlobalProperty('playback_initializing', '', wait=True)
+            util.setGlobalProperty('playback_seeking', '', wait=True)
+
+        if not self.seekBackTo:
+            if self.blackout:
+                util.DEBUG_LOG("Stopping Blackout in onSeekHandler end")
+                self.stop_blackout()
+
+            if self.unPauseAfterSeek:
+                self.unPauseAfterSeek = False
+                self.player.control('play')
+
+    @property
+    def subtitleStreamOffset(self):
+        if self.player.playerObject and self.isDirectPlay and self.player.playerObject.metadata.isMapped:
+            if self._subtitleStreamOffset is not None:
+                return self._subtitleStreamOffset
+
+            # when mapped, Kodi finds external subs on its own and places them at the top of the list, before
+            # embedded subs.
+            kodisubs = None
+            tries = 0
+            while not kodisubs and tries < 50:
+                try:
+                    playerID = kodijsonrpc.rpc.Player.GetActivePlayers()[0]["playerid"]
+                    kodisubs = kodijsonrpc.rpc.Player.GetProperties(playerid=playerID, properties=['subtitles'])["subtitles"]
+                    break
+                except IndexError:
+                    pass
+                tries += 1
+                util.MONITOR.waitForAbort(0.1)
+            if not kodisubs:
+                # this can happen occasionally, if the player isn't ready, yet, but we account for that
+                util.DEBUG_LOG("SeekHandler: subtitleStreamOffset: Returning zero as player not available or no "
+                               "subtitles found")
+                return 0
+            if kodisubs:
+                # find embedded subtitle stream in Plex
+                ess = None
+                ext_subs_amount = 0
+                for ss in self.player.video.subtitleStreams:
+                    if not ss.languageCode:
+                        util.DEBUG_LOG("Skipping subtitle: {}, no language code found".format(ss))
+                        continue
+                    if not ess and ss.embedded:
+                        ess = ss
+                    # ss.score: only downloaded external subtitles have a score; skip them, as they're not visible to
+                    # Kodi
+                    elif not ss.embedded and not ss.score:
+                        ext_subs_amount += 1
+
+                if not ess:
+                    self._subtitleStreamOffset = 0
+                    util.DEBUG_LOG("SeekHandler: subtitleStreamOffset: Returning zero as we didn't find an embedded subtitle")
+                    return 0
+
+                util.DEBUG_LOG("SeekHandler: subtitleStreamOffset: Found embedded subtitle at: {}; Kodi subtitles: {}", ext_subs_amount, kodisubs)
+
+                # find embedded subtitle stream in Kodi stream list
+                # we know Kodi puts external subtitles first, start there (Kodi might see more external subs or the PMS
+                # hasn't detected them, so we still need to find the embedded sub we're searching for)
+
+                # use iso639 to determine the streams' languages (Kodi uses the bibliographic language code, Plex uses
+                # the terminological one (e.g: ger vs. deu, fre vs. fra)
+                # resolveLanguage rather than languages.get: Plex also emits codes that
+                # aren't ISO-639 (e.g. "pob"), and a KeyError here would abort the seek
+                ess_lang = resolveLanguage(ess.languageCode)
+                for sub in kodisubs[ext_subs_amount:]:
+                    sub_language = sub['language'].strip(",.()- \x00")
+                    # we're expecting Kodi to return a 3-char part2b, if it doesn't, try to fix
+                    if len(sub_language) < 3:
+                        # kodi somehow mismatched the language and/or the subtitle was mis-tagged (e.g. pt (BR))
+                        util.DEBUG_LOG(
+                            "SeekHandler: subtitleStreamOffset: Found broken language definition in Kodi subtitle {}; trying to fix",
+                            sub)
+                        try:
+                            sub_language = languages.get(part1=sub_language).part2b
+                            util.LOG(
+                                "SeekHandler: subtitleStreamOffset: Fixed broken Kodi subtitle language for {} to: {}",
+                                sub, sub_language)
+                        except:
+                            util.LOG("SeekHandler: subtitleStreamOffset: Couldn't find language for Kodi subtitle {}; ignoring", sub)
+                            continue
+
+                    if (ess_lang is not None and
+                            sub['isdefault'] == ess.default.asBool() and sub['isforced'] == ess.forced.asBool() and
+                            sub['name'] == six.ensure_str(ess.title) and
+                            resolveLanguage(sub_language, part="part2b") == ess_lang):
+                        self._subtitleStreamOffset = sub['index'] - ess.typeIndex
+                        util.DEBUG_LOG("SeekHandler: subtitleStreamOffset: Returning offset: {} ({})",
+                                       self._subtitleStreamOffset, sub)
+                        return self._subtitleStreamOffset
+
+                util.LOG("SeekHandler: Couldn't find embedded subtitle in Kodi subtitle list: {}, assuming no difference", ess)
+                self._subtitleStreamOffset = 0
+
+                # old implementation
+                # embeddedStreams = list(filter(lambda x: x.embedded, self.player.video.subtitleStreams))
+                # difflen = len(kodisubs) - len(embeddedStreams)
+                ## does our sub-count differ from the one Kodi sees? if so, adjust the offset
+                # if difflen > 0:
+                #    self._subtitleStreamOffset = difflen
+                #    return self._subtitleStreamOffset
+                ## if not, do we have external subtitles? if so, we need to adjust the offset
+                # self._subtitleStreamOffset = len(list(filter(lambda x: not x.embedded, self.player.video.subtitleStreams)))
+                # return self._subtitleStreamOffset
+        return 0
+
+    def setSubtitles(self, do_sleep=True, honor_forced_subtitles_override=True, honor_deselect_subtitles=True,
+                     ref="_current_subtitle_idx"):
+        util.DEBUG_LOG("SeekHandler: setSubtitles")
+        if not self.player.video:
+            util.LOG("Warning: SetSubtitles: no player.video object available")
+            return
+
+        subs = self.player.video.selectedSubtitleStream(
+            forced_subtitles_override=honor_forced_subtitles_override and util.getSetting("forced_subtitles_override",
+                                                                                         ) and plexnetUtil.ACCOUNT.subtitlesForced == 0,
+            deselect_subtitles=honor_deselect_subtitles and getNativeLanguages(util.getSetting("disable_subtitle_languages") or []) or [],
+            ref=ref
+        )
+
+        # we want to get the subtitle stream offset regardless of whether we have subtitles selected or not,
+        # as the subtitle amount might change during playback (e.g. kodi subtitle download adds one to the list)
+        # but our concern are existing external subtitles in path mapped mode, which Kodi adds to the top of the list
+        sso = self.subtitleStreamOffset
+        if subs:
+            if do_sleep:
+                xbmc.sleep(100)
+
+            # the subtitle stream might not have had the correct amount of data set to properly determine auto sync
+            # reinit the auto sync state with our current video
+            subs.init_auto_sync(video=self.player.video)
+            path = subs.getSubtitleServerPath(auto_sync=subs.should_auto_sync)
+            if self.isDirectPlay:
+                if path:
+                    self.player.showSubtitles(False)
+                    util.DEBUG_LOG('Setting subtitle path: {0} ({1})', plexnetUtil.cleanToken(path), subs)
+                    self.player.setSubtitles(path)
+                    self.player.showSubtitles(True)
+                    self._lastSetEmbeddedSubIdx = None
+
+                else:
+                    # u_til.TEST(subs.__dict__)
+                    # u_til.TEST(self.player.video.mediaChoice.__dict__)
+
+                    targetIdx = subs.typeIndex + sso
+                    try:
+                        currentIdx = self.player.getSubtitleStream()
+                    except:
+                        currentIdx = -1
+
+                    if currentIdx == targetIdx:
+                        util.DEBUG_LOG('Embedded subtitle stream already set to: {0} (kodi: {1}), skipping',
+                                       targetIdx, currentIdx)
+                        self._lastSetEmbeddedSubIdx = targetIdx
+                    else:
+                        self.player.showSubtitles(False)
+                        util.DEBUG_LOG('Enabling embedded subtitles at: {0} ({1})', targetIdx, subs)
+                        self.player.setSubtitleStream(targetIdx)
+                        self._lastSetEmbeddedSubIdx = targetIdx
+                    self.player.showSubtitles(True)
+
+        else:
+            self.player.showSubtitles(False)
+            self._lastSetEmbeddedSubIdx = None
+
+    def _audioSwitchStallCheck(self):
+        """Detect AMLogic codec stall after an audio track switch.
+
+        When setAudioStream races with OnResetDisplay, the hardware codec can
+        freeze with no onAVChange events firing — so the onAVChange-based retry
+        doesn't help. After a delay, compare two player time samples. If the
+        position hasn't advanced, issue a small forward seek to unstick it.
+        """
+        util.MONITOR.waitForAbort(2.5)
+        if not self.player.isPlayingVideo() or util.MONITOR.abortRequested():
+            return
+        try:
+            t1 = self.player.getTime()
+        except RuntimeError:
+            return
+        util.MONITOR.waitForAbort(0.6)
+        if not self.player.isPlayingVideo() or util.MONITOR.abortRequested():
+            return
+        try:
+            t2 = self.player.getTime()
+        except RuntimeError:
+            return
+
+        if abs(t2 - t1) < 0.1:
+            target = max(t2 + 3.0, 0.5)
+            util.DEBUG_LOG("SeekHandler: codec appears stalled after audio switch "
+                           "(t1={}, t2={}), issuing recovery seek to {}", t1, t2, target)
+            try:
+                self.player.seekTime(target)
+            except:
+                util.ERROR("SeekHandler: recovery seek failed")
+
+    def _discoverExternalAudio(self):
+        """Discover external audio streams and register them on the video model.
+
+        Uses filesystem scan first (may have been done at preplay), then enriches
+        with Kodi's runtime data (channel count, codec) if available during playback.
+        Returns the list of ExternalAudioStream objects, or empty list.
+        """
+        video = self.player.video
+        if not video:
+            return []
+
+        # try filesystem discovery first (works at preplay and playback)
+        if hasattr(type(video), 'discoverExternalAudioStreams'):
+            ext_streams = video.discoverExternalAudioStreams()
+        else:
+            ext_streams = []
+
+        # during playback, enrich with Kodi's runtime data
+        plex_audio_count = video.embeddedAudioStreamCount
+        if plex_audio_count > 0:
+            try:
+                playerID = kodijsonrpc.rpc.Player.GetActivePlayers()[0]["playerid"]
+                kodi_streams = kodijsonrpc.rpc.Player.GetProperties(
+                    playerid=playerID, properties=['audiostreams'])['audiostreams']
+            except:
+                kodi_streams = []
+
+            ext_kodi_streams = kodi_streams[plex_audio_count:]
+
+            if ext_streams and ext_kodi_streams:
+                # update existing streams with Kodi's richer data
+                for i, ks in enumerate(ext_kodi_streams):
+                    if i < len(ext_streams):
+                        ext_streams[i].channels = plexstreamModule.plexobjects.PlexValue(str(ks.get('channels', 0)))
+                        ext_streams[i].kodiIndex = ks['index']
+                        if ks.get('codec'):
+                            ext_streams[i].codec = ks['codec']
+            elif not ext_streams and ext_kodi_streams:
+                # no filesystem discovery (not mapped?), fall back to Kodi-only discovery
+                for ks in ext_kodi_streams:
+                    lang_code = ks.get('language', '').strip(",.()- \x00")
+                    norm_lang = ''
+                    if lang_code:
+                        try:
+                            if len(lang_code) < 3:
+                                norm_lang = languages.get(part1=lang_code).part2t
+                            else:
+                                norm_lang = languages.get(part2b=lang_code).part2t
+                        except:
+                            norm_lang = lang_code
+
+                    stream = plexstreamModule.ExternalAudioStream(
+                        language_code=norm_lang,
+                        codec=ks.get('codec', ''),
+                        channels=ks.get('channels', 0),
+                        kodi_index=ks['index'],
+                        filename=ks.get('name', '')
+                    )
+                    ext_streams.append(stream)
+                    util.DEBUG_LOG('Discovered external audio from Kodi: {}', stream)
+
+                video.setExternalAudioStreams(ext_streams)
+
+        return ext_streams
+
+    def setAudioTrack(self):
+        self.player.lastPlayWasBGM = False
+        if self.isDirectPlay and self.player.video:
+            video = self.player.video
+
+            # first-time discovery (preplay didn't run): discovery may update the selection
+            # via cache restore or auto-match, so trigger it before reading selectedAudioStream
+            if util.getSetting('use_external_audio', False) and \
+                    self.player.playerObject and self.player.playerObject.metadata and \
+                    self.player.playerObject.metadata.isMapped and \
+                    video._externalAudioStreams is None:
+                self._discoverExternalAudio()
+
+            track = video.selectedAudioStream()
+            if track:
+                if getattr(track, 'isExternal', False):
+                    targetIdx = track.kodiIndex
+                else:
+                    targetIdx = track.typeIndex
+
+                currIdx = None
+                switched = False
+                tries = 0
+                while currIdx != targetIdx and tries < 40:
+                    try:
+                        playerID = kodijsonrpc.rpc.Player.GetActivePlayers()[0]["playerid"]
+                        currIdx = \
+                        kodijsonrpc.rpc.Player.GetProperties(playerid=playerID, properties=['currentaudiostream'])[
+                            'currentaudiostream']['index']
+                    except:
+                        pass
+                    if currIdx == targetIdx:
+                        util.DEBUG_LOG('Audio track is correct index: {0}', targetIdx)
+                        return switched
+
+                    if currIdx is not None:
+                        util.DEBUG_LOG('Switching audio track - index: {0} to {1} (try: {2})', currIdx, targetIdx, tries + 1)
+                        switched = True
+                        util.MONITOR.waitForAbort(0.1)
+                        self.player.setAudioStream(targetIdx)
+                    else:
+                        util.MONITOR.waitForAbort(0.1)
+                    tries += 1
+        return False
+
+
+    def updateOffset(self, offset=None):
+        try:
+            self.offset = offset if offset is not None else int(self.player.getTime() * 1000)
+        except RuntimeError:
+            pass
+
+    def initPlayback(self):
+        self.seeking = self.NO_SEEK
+
+        #self.setSubtitles()
+        if self.isTranscoded and self.player.getAvailableSubtitleStreams():
+            util.DEBUG_LOG('Enabling first subtitle stream, as we\'re in DirectStream')
+            self.player.showSubtitles(True)
+
+        if not self._deferAudioTrack:
+            util.DEBUG_LOG("SeekHandler: initPlayback: Not deferring audio track")
+            self.setAudioTrack()
+
+    def onPlayBackFailed(self):
+        # we might've crashed, make sure we set a correct volume again
+        self.stop_blackout()
+        if self.ended:
+            return False
+
+        if self.dialog:
+            self.dialog.onPlayBackFailed()
+
+        util.DEBUG_LOG('SeekHandler: onPlayBackFailed - Seeking={0}', self.seeking)
+        if self.seeking not in (self.SEEK_IN_PROGRESS, self.SEEK_PLAYLIST):
+            self.sessionEnded()
+
+        if self.seeking == self.SEEK_IN_PROGRESS:
+            return False
+        else:
+            self.seeking = self.NO_SEEK
+
+        return True
+
+    # def onSeekOSD(self):
+    #     self.dialog.activate()
+
+    def onVideoWindowOpened(self):
+        util.DEBUG_LOG('SeekHandler: onVideoWindowOpened - Seeking={0}', self.seeking)
+        self.getDialog().show()
+
+        self.initPlayback()
+
+    def onVideoWindowClosed(self):
+        self.hideOSD()
+        util.DEBUG_LOG('SeekHandler: onVideoWindowClosed - Seeking={0}', self.seeking)
+        self.player.trigger('videowindow.closed', session_id=self.sessionID, video=self.player.video)
+        if not self.seeking:
+            # send events as we might not have seen onPlayBackEnded and/or onPlayBackStopped in certain cases,
+            # especially when postplay isn't wanted and we're at the end of a show
+            #self.updateNowPlaying()
+            #if self._progressHld:
+            #    self.triggerProgressEvent()
+            if self.player.isPlaying():
+                self.player.stopAndWait()
+
+            if not self.playlist or not self.playlist.hasNext():
+                if not self.shouldShowPostPlay():
+                    util.DEBUG_LOG("SeekHandler: Not showing post-play (VideoWindowClosed)")
+                    self.sessionEnded()
+
+    def onVideoOSD(self):
+        # xbmc.executebuiltin('Dialog.Close(seekbar,true)')  # Doesn't work :)
+        util.DEBUG_LOG('SeekHandler: onVideoOSD - Seeking={0}', self.seeking)
+        if self.queuingSpecific or self.queuingNext:
+            return
+        self.showOSD()
+
+    def tick(self):
+        if (self.seeking != self.SEEK_IN_PROGRESS and not self.ended and self.player.started and self.seekOnStart is None
+                and self.seekBackTo is None and not self.pausedForSeek and not self.queuingNext and not self.queuingSpecific
+                and not self.stoppedManually and self.player.isPlayingVideo() and self.player.playState != self.player.STATE_STOPPED):
+            self.updateNowPlaying(t=self.dialog.timeKeeperTime if self.player.isExternal else None)
+        else:
+            util.DEBUG_LOG("Not ticking UpdateNowPlaying: seeking: {}, ended: {}, started: {}, SOS: {}, "
+                           "queuingNext: {}, stoppedManually: {}, playingVideo: {}, playState: {}, seekBackTo: {}, "
+                           "pausedForSeek: {}", self.seeking, self.ended, self.player.started, self.seekOnStart,
+                           self.queuingNext, self.stoppedManually, self.player.isPlayingVideo(), self.player.playState,
+                           self.seekBackTo, self.pausedForSeek)
+
+        if self.dialog and getattr(self.dialog, "_ignoreTick", None) is not True:
+            # if we missed removing the playback started event flag, make sure to remove it on the first tick
+            if self.pbStartedSet and not self.pbStartedRemoved:
+                util.setGlobalBoolProperty('playback_started_event', False)
+                self.pbStartedRemoved = True
+            self.dialog.tick()
+
+    def close(self):
+        self.hideOSD(delete=True)
+        if self.blackoutDialog:
+            try:
+                d = self.blackoutDialog
+                self.blackoutDialog = None
+                d.doClose()
+                del d
+                util.garbageCollect()
+            except:
+                pass
+
+    def sessionEnded(self):
+        self.player.sessionID = None
+        self.ensureCorrectVolume()
+        if self.ended:
+            return
+        self.ended = True
+        util.DEBUG_LOG('Player: Video session ended')
+
+        # Restore LAV filter setting
+        if self.player.lavSettingControl:
+            self.player.lavSettingControl.restore()
+            self.player.lavSettingControl = None
+
+        # Restore alternate seek flag
+        if self.player._originalAlternateSeek:
+            util.DEBUG_LOG('Alternate seek restored')
+            self.useAlternateSeek = True
+            self.player._originalAlternateSeek = False
+
+        self.player.trigger('session.ended', session_id=self.sessionID)
+        self.hideOSD(delete=True)
+
+    __next__ = next
+
+
+class AudioPlayerHandler(BasePlayerHandler):
+    def __init__(self, player, session_id=None):
+        BasePlayerHandler.__init__(self, player, session_id=session_id)
+        self.timelineType = 'music'
+        util.setGlobalProperty('track.ID', '')
+        self.extractTrackInfo()
+
+    def setup(self, *args, **kwargs):
+        util.MONITOR.on("system.exit", self.onKodiExit)
+
+    def extractTrackInfo(self):
+        if not self.player.isPlayingAudio():
+            return
+
+        plexID = None
+        for x in range(10):  # Wait a sec (if necessary) for this to become available
+            try:
+                item = kodijsonrpc.rpc.Player.GetItem(playerid=0, properties=['comment'])['item']
+                plexID = item['comment']
+            except:
+                util.ERROR()
+
+            if plexID:
+                break
+            util.MONITOR.waitForAbort(0.1)
+
+        if not plexID:
+            return
+
+        if not plexID.startswith('PLEX-'):
+            return
+
+        util.DEBUG_LOG('Extracting track info from comment')
+        try:
+            data = plexID.split(':', 1)[-1]
+            from plexnet import plexobjects
+            track = plexobjects.PlexObject.deSerialize(base64.urlsafe_b64decode(data.encode('utf-8')))
+            track.softReload()
+            self.media = track
+            pobj = plexplayer.PlexAudioPlayer(track, session_id=self.sessionID)
+            self.player.playerObject = pobj
+            self.updatePlayQueueTrack(track)
+            util.setGlobalProperty('track.ID', track.ratingKey)  # This is used in the skins to match a listitem
+        except:
+            util.ERROR()
+
+    def setPlayQueue(self, pq):
+        self.playQueue = pq
+        pq.on('items.changed', self.playQueueCallback)
+
+    def playQueueCallback(self, **kwargs):
+        if windowutils.HOME._shuttingDown:
+            return
+
+        plist = xbmc.PlayList(xbmc.PLAYLIST_MUSIC)
+        just_added = kwargs.get("just_added")
+        # plist.clear()
+
+        waited = 0
+        while not kodijsonrpc.rpc.Player.GetActivePlayers() and not util.MONITOR.abortRequested() and waited < 10:
+            util.MONITOR.waitForAbort(0.5)
+            waited += 0.5
+
+        try:
+            citem = kodijsonrpc.rpc.Player.GetItem(playerid=0, properties=['comment'])['item']
+            plexID = citem['comment'].split(':', 1)[0]
+        except:
+            #util.ERROR()
+            return
+
+        current = plist.getposition()
+        size = plist.size()
+
+        # if we've just added items to the playqueue, we don't need to do any swappery
+        if not just_added:
+            # Remove everything but the current track
+            for x in range(size - 1, current, -1):  # First everything with a greater position
+                kodijsonrpc.rpc.Playlist.Remove(playlistid=xbmc.PLAYLIST_MUSIC, position=x)
+            for x in range(current):  # Then anything with a lesser position
+                kodijsonrpc.rpc.Playlist.Remove(playlistid=xbmc.PLAYLIST_MUSIC, position=0)
+
+            swap = None
+            for idx, track in enumerate(self.playQueue.items()):
+                tid = 'PLEX-{0}'.format(track.ratingKey)
+                if tid == plexID:
+                    # Save the position of the current track in the pq
+                    swap = idx
+
+                url, li = self.player.createTrackListItem(track, index=idx + 1)
+
+                plist.add(url, li)
+
+            if swap is not None:
+                if util.KODI_VERSION_MAJOR >= 20:
+                    vi = plist[0].getMusicInfoTag()
+                    vi.setPlayCount(swap + 1)
+
+                else:
+                    plist[0].setInfo('music', {
+                        'playcount': swap + 1,
+                    })
+
+            # Now swap the track to the correct position. This seems to be the only way to update the kodi playlist position to the current track's new position
+            if swap is not None:
+                kodijsonrpc.rpc.Playlist.Swap(playlistid=xbmc.PLAYLIST_MUSIC, position1=0, position2=swap + 1)
+                try:
+                    kodijsonrpc.rpc.Playlist.Remove(playlistid=xbmc.PLAYLIST_MUSIC, position=0)
+                except:
+                    pass
+        else:
+            # add added items
+            idx = plist.size() + 1
+            for track in just_added:
+                url, li = self.player.createTrackListItem(track, index=idx)
+
+                plist.add(url, li)
+                idx += 1
+
+        self.player.trigger('playlist.changed')
+
+    def updatePlayQueue(self, delay=False):
+        if not self.playQueue:
+            return
+
+        self.playQueue.refresh(delay=delay)
+
+    def updatePlayQueueTrack(self, track):
+        if not self.playQueue:
+            return
+
+        self.playQueue.selectedId = track.playQueueItemID or None
+
+    @property
+    def trueTime(self):
+        if self.player.playState != self.player.STATE_STOPPED:
+            try:
+                return self.player.getTime()
+            except:
+                return self.player.currentTime
+        return self.player.currentTime
+
+    def stampCurrentTime(self):
+        try:
+            self.player.currentTime = self.player.getTime()
+        except RuntimeError:  # Not playing
+            pass
+
+    def onMonitorInit(self):
+        self.extractTrackInfo()
+        self.ignoreTimelines = False
+        self.updateNowPlaying(state='playing')
+
+    def onPlayBackStarted(self):
+        util.DEBUG_LOG('AudioPlayerHandler: onPlayBackStarted')
+        self.player.lastPlayWasBGM = False
+        self.updatePlayQueue(delay=True)
+        self.extractTrackInfo()
+        self.ignoreTimelines = False
+        self.updateNowPlaying(state='playing')
+
+    def onAVStarted(self):
+        util.DEBUG_LOG('AudioPlayerHandler: onAVStarted')
+        self.player.trigger('started.audio')
+
+    def onAVChange(self):
+        util.DEBUG_LOG('AudioPlayerHandler: onAVChange')
+        self.player.trigger('changed.audio')
+
+    def onPlayBackResumed(self):
+        self.updateNowPlaying(state='playing')
+
+    def onPlayBackPaused(self):
+        self.updateNowPlaying(state='paused')
+
+    def onPlayBackStopped(self):
+        self.updatePlayQueue()
+        self.updateNowPlaying(state='stopped')
+        self.ignoreTimelines = True
+        self.player.trigger('audio.stopped')
+        self.finish()
+
+    def onPlayBackEnded(self):
+        self.updatePlayQueue()
+        self.updateNowPlaying(state='stopped')
+        self.ignoreTimelines = True
+        self.finish()
+
+    def onPlayBackFailed(self):
+        return True
+
+    def finish(self):
+        self.player.trigger('session.ended')
+        util.setGlobalProperty('track.ID', '')
+
+    def tick(self):
+        if not self.player.isPlayingAudio() or util.MONITOR.abortRequested():
+            return
+
+        self.stampCurrentTime()
+        self.updateNowPlaying()
+
+
+class BGMPlayerHandler(BasePlayerHandler):
+    def __init__(self, player, init_data, old_volume=None):
+        BasePlayerHandler.__init__(self, player)
+        self.timelineType = 'music'
+        self.initData = init_data
+        self.currentlyPlaying = init_data[2]
+        self.abort = False
+        self.fading = False
+        self.generation = player.bgmGeneration
+        self.fadeSeq = 0
+        self._fadesActive = 0
+        self._fadeLock = threading.Lock()
+        util.setGlobalProperty('track.ID', '')
+
+        # a fade still in flight is dragging the system volume down toward 1, so reading it here would record
+        # near-silence as the user's volume and resetVolume() would later restore that. Carry the outgoing
+        # handler's value across the switch instead - it was read while nothing was fading.
+        self.oldVolume = old_volume if old_volume is not None else self._getVolume()
+
+    def owns(self, fade_seq=None):
+        """
+        True while this handler is still the player's BGM owner and, when fade_seq is given, while that fade is
+        still the newest one started on it.
+
+        There is one global Kodi volume and no lock on it. A theme switch installs a new handler and bumps the
+        player's generation; a newer fade on this handler bumps fadeSeq. Either leaves an older fade writing
+        volume for a theme nobody is listening to, so it has to drop out rather than finish its ramp.
+        """
+        if self.generation != self.player.bgmGeneration:
+            return False
+        return fade_seq is None or fade_seq == self.fadeSeq
+
+    def onPlayBackStarted(self):
+        self.player.bgmStarting = False
+        self.player.trigger('bgm.started')
+        util.DEBUG_LOG("BGM: playing theme for {}", self.currentlyPlaying)
+
+    def _getVolume(self):
+        return self.getVolume()
+
+    def setVolume(self, volume=None, reset=False):
+        vlm = self.oldVolume if reset else volume
+        curVolume = self.getVolume()
+
+        if curVolume != vlm:
+            util.DEBUG_LOG("BGM: {}setting volume to: {}", "re-" if reset else "", vlm)
+            self._setVolume(vlm)
+            return True
+        else:
+            util.DEBUG_LOG("BGM: Volume already at {}", vlm)
+            return False
+
+    def resetVolume(self):
+        self.setVolume(reset=True)
+
+    def fade(self, to, fast=False, stop=False, fade_time=1.0):
+        with self._fadeLock:
+            self.fadeSeq += 1
+            my_seq = self.fadeSeq
+            self._fadesActive += 1
+            self.fading = True
+
+        superseded = False
+        try:
+            cur_vol = float(self._getVolume())
+            is_out = to < cur_vol
+
+            util.DEBUG_LOG(
+                "BGM: fade {} from {} to {}, fast: {}",
+                "out" if is_out else "in", cur_vol, to, fast
+            )
+
+            fade_time = 0.5 if fast else fade_time
+            num_steps = fade_time / 0.1
+            step_delay = fade_time / num_steps
+            vol_step = (to - cur_vol) / num_steps  # automatically handles direction
+
+            for step in range(int(num_steps) + 1):
+                # someone else owns the volume now; every step from here would fight them, and cur_vol was
+                # sampled before they started so the whole remaining ramp is wrong anyway
+                if not self.owns(my_seq):
+                    util.DEBUG_LOG("BGM: fade {} superseded at step {}, dropping out",
+                                   "out" if is_out else "in", step)
+                    superseded = True
+                    break
+
+                # Stop immediately if system requests abort
+                if util.MONITOR.abortRequested() or self.abort:
+                    util.LOG("BGM: Abort requested, cancelling fade {}",
+                             "out" if is_out else "in")
+                    self.resetVolume()
+                    break
+
+                # Compute new volume
+                vol = cur_vol + step * vol_step
+
+                # Clamp between 1 and 100 instead of 0 and 100
+                vol = int(max(1, min(vol, 100)))  # never drop to 0
+
+                util.DEBUG_LOG("BGM: fade {} step {} -> {}",
+                               "out" if is_out else "in", step, vol)
+                self._setVolume(vol, wait=False)
+                util.MONITOR.waitFor(step_delay)
+
+            # Guarantee final target (but still not below 1). Skipped when superseded: this write lands after
+            # the new owner's, so it would undo them.
+            if not superseded:
+                self._setVolume(max(1, int(to)))
+        finally:
+            with self._fadeLock:
+                self._fadesActive -= 1
+                self.fading = self._fadesActive > 0
+
+        # stop() acts on the player, not on us. A superseded fade reaching it would stop the theme that
+        # replaced ours, which is what killed themes on fast navigation.
+        if stop:
+            if superseded or not self.owns():
+                util.DEBUG_LOG("BGM: not stopping player, theme {} is no longer current", self.currentlyPlaying)
+            else:
+                self.player.stop()
+
+    def fadeIn(self, volume, fast=False):
+        waited = 0
+        while not self.player.isPlayingAudio() and waited < util.MONITOR.waitAmount(2.0):
+            if util.MONITOR.abortRequested():
+                return
+            util.MONITOR.waitFor()
+        return self.fade(volume, fast=fast)
+
+    def fadeOut(self, fast=False, stop=False, fade_time=1.5):
+        if not self.player.isPlayingAudio():
+            # the deferred fade-out thread can land here after a new theme replaced us but before its audio is
+            # up. This is the one volume write outside fade(), so it needs the same ownership check.
+            if self.owns():
+                self.resetVolume()
+            else:
+                util.DEBUG_LOG("BGM: not restoring volume, theme {} is no longer current", self.currentlyPlaying)
+            return
+        return self.fade(0, fast=fast, stop=stop, fade_time=fade_time)
+
+    def onPlayBackStopped(self, rm=True):
+        util.DEBUG_LOG("BGM: stopped theme for {}", self.currentlyPlaying)
+        util.setGlobalProperty('theme_playing', '')
+        self.abort = True
+        while self.fading:
+            util.MONITOR.waitFor()
+
+        if self.owns():
+            self.player.bgmPlaying = False
+            self.resetVolume()
+        else:
+            # a newer theme owns the volume and the flag now. Clearing bgmPlaying would report the live theme
+            # as stopped, and resetVolume() would drop it to the pre-BGM value mid-playback.
+            util.DEBUG_LOG("BGM: stop for superseded theme {}, leaving volume and state alone",
+                           self.currentlyPlaying)
+
+        if rm:
+            fn = os.path.join(util.translatePath("special://temp/"), "theme_{}.mp3".format(self.currentlyPlaying))
+            if os.path.exists(fn):
+                util.DEBUG_LOG("BGM: Removing cached theme: {}", fn)
+                try:
+                    util.xbmcvfs.delete(fn)
+                except:
+                    util.DEBUG_LOG("BGM: Couldn't delete cached theme: {}", fn)
+
+    def onPlayBackEnded(self):
+        requeue = util.getSetting('theme_music_loop') and not self.player.dontRequeueBGM
+        self.onPlayBackStopped(rm=not requeue)
+
+        if requeue:
+            self.player.playBackgroundMusic(*self.initData)
+
+    def onPlayBackFailed(self):
+        self.onPlayBackStopped()
+
+    def close(self):
+        self.player.stopAndWait()
+        self.onPlayBackStopped()
+
+
+class BGMPlayerTask(backgroundthread.Task):
+    def setup(self, source, player, volume, *args, **kwargs):
+        self.source = source
+        self.player = player
+        self.volume = volume
+        self.is_local = kwargs.get('is_local', False)
+        self.is_cached = kwargs.get('is_cached', False)
+        self.fade = kwargs.get('fade', True)
+        self.fade_fast = kwargs.get('fade_fast', False)
+        return self
+
+    def cancel(self):
+        self.player.stopAndWait()
+        self.player = None
+        backgroundthread.Task.cancel(self)
+
+    def run(self):
+        if self.isCanceled():
+            return
+
+        self.player.bgmPlaying = True
+        util.setGlobalProperty('theme_playing', '1')
+        ct = 0
+        while ct < 10 and not util.getGlobalProperty('theme_playing') and not util.MONITOR.abortRequested():
+            util.MONITOR.waitForAbort(0.1)
+            ct += 1
+
+        # always set to min volume
+        if self.fade:
+            self.player.handler.setVolume(1)
+            self.player.play(self.source, windowed=True)
+            # fade in
+            self.player.handler.fadeIn(self.volume, fast=self.fade_fast)
+        else:
+            self.player.handler.setVolume(self.volume)
+            self.player.play(self.source, windowed=True)
+
+
+def consumeStaleTerminal(event):
+    """
+    Swallow the previous playback's terminal player event when it arrives after
+    _playVideo's stop fence has been lifted, so it isn't mistaken for the new item failing.
+    """
+    def wrap(fn):
+        @wraps(fn)
+        def inner(self, *args, **kwargs):
+            if self._pendingStaleStop:
+                self._pendingStaleStop = False
+                util.DEBUG_LOG('Player - ignoring stale {} event of the previous playback', event)
+                return
+            return fn(self, *args, **kwargs)
+        return inner
+    return wrap
+
+
+class PlexPlayer(xbmc.Player, signalsmixin.SignalsMixin):
+    STATE_STOPPED = "stopped"
+    STATE_PLAYING = "playing"
+    STATE_PAUSED = "paused"
+    STATE_BUFFERING = "buffering"
+
+    OFFSET_RE = re.compile(r'(offset=)\d+')
+
+    def __init__(self, *args, **kwargs):
+        xbmc.Player.__init__(self, *args, **kwargs)
+        signalsmixin.SignalsMixin.__init__(self)
+        self.sessionID = None
+        self._pendingStaleStop = False
+        # serialises theme switches, and retires the fades of the theme being switched away from. Monotonic
+        # on purpose and never reset: a handler that compares equal to a generation it no longer owns would
+        # be exactly the bug this counter exists to stop. See BGMPlayerHandler.owns().
+        self.bgmLock = threading.RLock()
+        self.bgmGeneration = 0
+        self.handler = AudioPlayerHandler(self)
+        self.isExternal = False
+
+        self.on('action', self.playerAction)
+
+    def init(self):
+        self._closed = False
+        self._nextItem = None
+        self._ignorePlaybackFailure = False
+        self.started = False
+        self.bgmPlaying = False
+        self.bgmStarting = False
+        self.lastPlayWasBGM = False
+        self.startingVideoPlayback = False
+        self.BGMTask = None
+        self.pauseAfterPlaybackStarted = False
+        self.video = None
+        self.sessionID = None
+        self.hasOSD = False
+        self.hasSeekOSD = False
+        self.handler = AudioPlayerHandler(self)
+        self.playerObject = None
+        self.currentTime = 0
+        self.thread = None
+        self.ignoreStopEvents = False
+        self._pendingStaleStop = False
+        self.isExternal = False
+        self.dontRequeueBGM = False
+        self.lavSettingControl = None
+        self._originalAlternateSeek = False
+        if xbmc.getCondVisibility('Player.HasMedia') and self.isPlayingAudio() and not self.bgmPlaying:
+            self.started = True
+        self.resume = False
+        self.open()
+
+        return self
+
+    def open(self):
+        self._closed = False
+        self.monitor()
+
+    def close(self, shutdown=False):
+        self._closed = True
+        if shutdown:
+            self.off('action', self.playerAction)
+
+    def reset(self):
+        self.video = None
+        self.started = False
+        self.bgmPlaying = False
+        self.playerObject = None
+        self.pauseAfterPlaybackStarted = False
+        self.ignoreStopEvents = False
+        self._ignorePlaybackFailure = False
+        self.dontRequeueBGM = False
+        #self.handler = AudioPlayerHandler(self)
+        self.currentTime = 0
+
+    def control(self, cmd, force=False):
+        if cmd == 'play':
+            self.pauseAfterPlaybackStarted = False
+            util.DEBUG_LOG('Player - Control:  Command=Play')
+            if xbmc.getCondVisibility('Player.Paused | !Player.Playing') or force:
+                util.DEBUG_LOG('Player - Control:  Playing')
+                xbmc.executebuiltin('PlayerControl(Play)')
+        elif cmd == 'pause':
+            util.DEBUG_LOG('Player - Control:  Command=Pause')
+            if not xbmc.getCondVisibility('Player.Paused') or force:
+                util.DEBUG_LOG('Player - Control:  Pausing')
+                xbmc.executebuiltin('PlayerControl(Play)')
+
+    def playerAction(self, action, **kwargs):
+        """
+        Signal receiver for specific player actions (called by SeekDialog for example)
+        @param action: "next", "prev", "playAt"
+        @param kwargs: "pos"=playlist index; in case of action == "playAt"
+        @return:
+        """
+        if not self.handler:
+            util.DEBUG_LOG("Player: Can't handle action without handler")
+            return
+
+        util.DEBUG_LOG('Player - Action: {} ({})', action, str(kwargs))
+
+        self.handler.hideOSD()
+
+        if action == "next":
+            self.handler.next()
+
+        elif action == "prev":
+            self.handler.prev()
+
+        elif action == "playAt":
+            self.handler.playAt(kwargs['pos'])
+
+    @property
+    def playState(self):
+        if xbmc.getCondVisibility('Player.Playing'):
+            return self.STATE_PLAYING
+        elif xbmc.getCondVisibility('Player.Caching'):
+            return self.STATE_BUFFERING
+        elif xbmc.getCondVisibility('Player.Paused'):
+            return self.STATE_PAUSED
+
+        return self.STATE_STOPPED
+
+    def videoIsFullscreen(self):
+        return xbmc.getCondVisibility('VideoPlayer.IsFullscreen')
+
+    def currentTrack(self):
+        if self.handler.media and self.handler.media.type == 'track':
+            return self.handler.media
+        return None
+
+    def playAt(self, path, ms):
+        """
+        Plays the video specified by path.
+        Optionally set the start position with h,m,s,ms keyword args.
+        """
+        seconds = ms / 1000.0
+
+        h = int(seconds / 3600)
+        m = int((seconds % 3600) / 60)
+        s = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+
+        kodijsonrpc.rpc.Player.Open(
+            item={'file': path},
+            options={'resume': {'hours': h, 'minutes': m, 'seconds': s, 'milliseconds': ms}}
+        )
+
+    def play(self, *args, **kwargs):
+        self.started = False
+        xbmc.Player.play(self, *args, **kwargs)
+
+    def playBackgroundMusic(self, source, volume, rating_key, *args, **kwargs):
+        # rapid navigation queues one ThemeMusicTask per screen and BGThreader runs three at once, so without
+        # this every check below races its own outcome: two callers both find no theme of theirs playing, both
+        # stop the incumbent, and both install a handler. Only ever entered from a BGThreader worker or the
+        # player event thread, never from the UI thread, so holding it across the fade below blocks nothing
+        # the user can see.
+        with self.bgmLock:
+            if self.startingVideoPlayback:
+                return
+            if self.isPlaying():
+                if not self.lastPlayWasBGM:
+                    return
+
+                else:
+                    # don't re-queue the currently playing theme
+                    if isinstance(self.handler, BGMPlayerHandler) and self.handler.currentlyPlaying == rating_key:
+                        return
+
+                    # cancel any currently playing theme before starting the new one
+                    else:
+                        self.stopAndWait(fade=self.bgmPlaying and kwargs.get("fade", True), fade_fast=self.bgmPlaying)
+                        if self.startingVideoPlayback:
+                            return
+
+            self.sessionID = "BGM{}".format(rating_key)
+            curVol = self.handler.getVolume()
+            # no current volume, don't play BGM either
+            if not curVol:
+                return
+
+            if self.BGMTask and self.BGMTask.isValid():
+                self.BGMTask.cancel()
+
+            self.started = False
+            self.bgmStarting = True
+            self.dontRequeueBGM = False
+
+            # bumping the generation retires every fade still running on the outgoing handler, and its stored
+            # oldVolume comes with us: curVol was read while that fade may have been part-way down, so trusting
+            # it here is how the user's volume ends up permanently at 1.
+            outgoing = self.handler
+            carried = outgoing.oldVolume if isinstance(outgoing, BGMPlayerHandler) else None
+            self.bgmGeneration += 1
+            self.handler = BGMPlayerHandler(self, [source, volume, rating_key], old_volume=carried)
+
+            # store current volume if it's different from the BGM volume
+            refVol = carried if carried is not None else curVol
+            if volume < refVol:
+                util.setSetting('last_good_volume', refVol)
+
+            self.lastPlayWasBGM = True
+            self.BGMTask = BGMPlayerTask().setup(source, self, volume, *args, **kwargs)
+            backgroundthread.BGThreader.addTask(self.BGMTask)
+
+    def playVideo(self, video, resume=False, force_update=False, session_id=None, handler=None):
+        if self.bgmPlaying:
+            self.stopAndWait()
+
+        if handler and isinstance(handler, SeekPlayerHandler):
+            self.handler = handler
+            self.handler.reused = True
+        else:
+            self.handler = SeekPlayerHandler(self, session_id or self.sessionID)
+
+        self.video = video
+        self.resume = resume
+        self.open()
+        self._playVideo(resume and video.viewOffset.asInt() or 0, force_update=force_update, session_id=session_id)
+
+    def getOSSPathHint(self, meta):
+        # only hint the path one folder above for a movie, two folders above for TV
+        try:
+            head1, tail1 = os.path.split(meta.path)
+            head2, tail2 = os.path.split(head1)
+            if self.video.type == "episode":
+                head3, tail3 = os.path.split(head2)
+                cleaned_path = os.path.join(tail3, tail2, tail1)
+            else:
+                cleaned_path = os.path.join(tail2, tail1)
+        except:
+            cleaned_path = ""
+        return cleaned_path
+
+    def _playVideo(self, offset=0, seeking=0, force_update=False, playerObject=None, session_id=None):
+        self.sessionID = session_id or self.sessionID
+        self.trigger('new.video', video=self.video)
+        self.trigger(
+            'change.background',
+            url=self.video.defaultArt.asTranscodedImageURL(1920, 1080, opacity=60, background=colors.noAlpha.Background)
+        )
+        try:
+            if not playerObject:
+                self.playerObject = plexplayer.PlexPlayer(self.video, offset, forceUpdate=force_update, session_id=self.sessionID)
+                self.playerObject.build()
+            self.playerObject = self.playerObject.getServerDecision()
+        except plexplayer.DecisionFailure as e:
+            util.showNotification(e.reason, header=util.T(32448, 'Playback Failed!'))
+            raise
+        except:
+            util.ERROR(notify=True)
+            return
+
+        meta = self.playerObject.metadata
+        url = meta.streamUrls[0]
+
+        bifURL = self.playerObject.getBifUrl()
+        util.DEBUG_LOG('Playing URL(+{1}ms): {0}{2}', plexnetUtil.cleanToken(url), offset, bifURL and ' - indexed' or '')
+
+        self.ignoreStopEvents = True
+        if self.isPlaying():
+            # Kodi delivers the stopped playback's terminal event on its own time; if it lands
+            # after the fence below is lifted, it must not be mistaken for the new item failing
+            self._pendingStaleStop = True
+        self.stopAndWait()  # Stop before setting up the handler to prevent player events from causing havoc
+        if self.handler and self.handler.queuingNext and util.addonSettings.consecutiveVideoPbWait:
+            util.DEBUG_LOG(
+                "Waiting for {}s until playing back next item".format(util.addonSettings.consecutiveVideoPbWait))
+            util.MONITOR.waitForAbort(util.addonSettings.consecutiveVideoPbWait)
+
+        self.ignoreStopEvents = False
+
+        # Seamless branching LAV filter workaround (CoreELEC U3k B9+)
+        # Check if this movie needs LAV filters enabled
+        if util.CE_SB_LAV_SWITCH and util.getSetting("lav_mode_auto_switch") and self.video.type == 'movie':
+            # Extract IMDB ID
+            imdb_id = seamless_branching.sbm.get_imdb_id(self.video)
+
+            # Get audio stream object
+            audio_stream = None
+            if (self.playerObject and
+                hasattr(self.playerObject, 'choice') and
+                self.playerObject.choice and
+                hasattr(self.playerObject.choice, 'audioStream') and
+                self.playerObject.choice.audioStream):
+                audio_stream = self.playerObject.choice.audioStream
+
+            # Per-folder force-engage: an SB/SB.txt marker file next to the
+            # mapped part bypasses both the curated list and the codec gate.
+            sb_marker = seamless_branching.sbm.has_sb_marker(self.playerObject)
+            is_sb_match = seamless_branching.sbm.is_seamless_branching_movie(imdb_id, audio_stream)
+
+            # Check if LAV filters should be enabled
+            if is_sb_match or sb_marker:
+                if sb_marker:
+                    util.DEBUG_LOG('Seamless branching marker file present, forcing engage: title={}',
+                                  self.video.title)
+                else:
+                    util.DEBUG_LOG('Seamless branching detected: IMDB={} codec={} bitrate={}kbps title={}',
+                                  imdb_id,
+                                  audio_stream.codec if audio_stream else 'none',
+                                  audio_stream.bitrate if audio_stream and hasattr(audio_stream, 'bitrate') else 'unknown',
+                                  self.video.title)
+
+                # Enable LAV filters (use SettingControl for Kodi setting)
+                lav_mode = seamless_branching.sbm.get_lav_mode()
+                lavSettingControl = util.SettingControl(
+                    seamless_branching.SeamlessBranchingManager.LAV_SETTING_ID,
+                    'LAV Seamless Branching Filter',
+                    disable_value=0
+                )
+
+                if seamless_branching.sbm.needs_lav_switch(lavSettingControl.original):
+                    lavSettingControl.set(lav_mode)
+                    self.lavSettingControl = lavSettingControl
+                    # Disable alternate seek (internal handler flag, not Kodi setting)
+                    if self.handler.useAlternateSeek:
+                        util.DEBUG_LOG('Alternate seek disabled for seamless branching')
+                        self._originalAlternateSeek = True
+                        self.handler.useAlternateSeek = False
+                else:
+                    util.DEBUG_LOG('LAV mode switch not necessary')
+
+        # fixme: this handler might be accessing a new playerObject, not the one it's expecting to access,
+        #        especially when .next() is used
+        self.handler.reset()
+        self.handler.setup(self.video.duration.asInt(), meta, offset, bifURL, title=self.video.grandparentTitle,
+                           title2=self.video.title, seeking=seeking, chapters=self.video.chapters,
+                           is_mapped=meta.isMapped)
+
+        # try to get an early intro offset so we can skip it if necessary
+        introOffset = None
+        if not offset:
+            probOff = self.handler.getIntroOffset(offset, setSkipped=True)
+            if probOff:
+                introOffset = probOff
+
+        if meta.isTranscoded:
+            self.handler.mode = self.handler.MODE_RELATIVE
+
+            if introOffset:
+                # cheat our way into an early intro skip by modifying the offset in the stream URL
+                util.DEBUG_LOG("Immediately seeking behind intro: {}", introOffset)
+                url = self.OFFSET_RE.sub(r"\g<1>{}".format(introOffset // 1000), url)
+                self.handler.dialog.baseOffset = introOffset
+
+                # probably not necessary
+                meta.playStart = introOffset // 1000
+        else:
+            blackout = util.getSetting('initial_seek_blackout')
+            if offset:
+                util.DEBUG_LOG("SeekOnStart: Using as SeekOnStart: {0}; offset: {1}", meta.playStart, offset)
+                self.handler.seekOnStart = meta.playStart * 1000
+                self.handler.blackout = self.handler.blackoutWasWanted = blackout
+                self.handler.skipMarkersBefore(meta.playStart * 1000)
+            elif introOffset:
+                util.DEBUG_LOG("SeekOnStart: Seeking behind intro after playstart: {}", introOffset)
+                self.handler.seekOnStart = introOffset
+                self.handler.blackout = self.handler.blackoutWasWanted = blackout
+
+            # seek back on start
+            if not self.handler.seekOnStart and util.getSetting('seek_back_on_start'):
+                util.DEBUG_LOG("Seek back on start enabled, instructing the SeekPlayerHandler to seek forward, then backwards")
+
+                to = max(util.addonSettings.altseekValidSeekWindow, 5000)
+                self.handler.ignoreTimelines = True
+                util.DEBUG_LOG("SeekOnStart: Seeking temporarily to: {}", max(to, 1000))
+                self.handler.seekOnStart = to
+                self.handler.seekBackTo = 50
+                self.handler.blackout = self.handler.blackoutWasWanted = blackout
+
+            if self.handler.seekOnStart is not None:
+                util.setGlobalProperty('playback_initializing', '1', wait=True)
+                # Defer audio only when external audio is actually present — otherwise the
+                # late post-seek setAudioStream() knocks out the embedded subtitle set at preplay.
+                if hasattr(self.video, '_externalAudioStreams') and self.video._externalAudioStreams:
+                    util.DEBUG_LOG("Player: Enabling deferred audio track (external audio detected)")
+                    self.handler._deferAudioTrack = True
+            else:
+                util.setGlobalProperty('playback_initializing', '', wait=True)
+
+            util.setGlobalBoolProperty('playback_started', False)
+            util.setGlobalBoolProperty('playback_started_event', False)
+
+            self.handler.mode = self.handler.MODE_ABSOLUTE
+
+        if not meta.isMapped:
+            # Kodi 19 will try to look for subtitles in the directory containing the file. '/' and `/file.mkv` both
+            # point to the file, and Kodi will happily try to read the whole file without recognizing it isn't a
+            # directory. To get around that, we omit the filename here since it is unnecessary.
+            omit, fname = url.rsplit("/", 1)
+            if fname.startswith("file."):
+                url = "{}/{}".format(omit, "?" + fname.split("?")[1] if "?" in fname else "")
+
+            url = util.addURLParams(url, {
+                'X-Plex-Client-Profile-Name': 'Generic',
+                'X-Plex-Client-Identifier': self.video.settings.getGlobal('clientIdentifier'),
+                'X-Plex-Session-Identifier': self.sessionID,
+                'X-Plex-Session-Id': self.sessionID
+            })
+        li = xbmcgui.ListItem(self.video.title, path=url)
+        vtype = self.video.type if self.video.type in ('movie', 'episode', 'musicvideo') else 'video'
+
+        util.setGlobalProperty("current_path", self.getOSSPathHint(meta), base='videoinfo.{0}')
+        util.setGlobalProperty("current_size", str(meta.size), base='videoinfo.{0}')
+
+        imdbNum = None
+
+        fill_trakt_ids = False
+        trakt_ids = {}
+
+        # generate guids when script.trakt is installed
+        if "script.trakt" in util.USER_ADDONS:
+            fill_trakt_ids = True
+
+        a = self.video.guid
+        if "com.plexapp.agents.imdb" in a:
+            imdbNum = a.split("?lang=")[0][a.index("com.plexapp.agents.imdb://")+len("com.plexapp.agents.imdb://"):]
+            if fill_trakt_ids:
+                if imdbNum:
+                    trakt_ids["imdb"] = imdbNum
+
+        elif fill_trakt_ids and "com.plexapp.agents.themoviedb" in a:
+            trakt_ids["tmdb"] = a.split("?lang=")[0][
+                                a.index("com.plexapp.agents.themoviedb://") + len("com.plexapp.agents.themoviedb://"):]
+
+        elif fill_trakt_ids and "com.plexapp.agents.thetvdb" in a:
+            trakt_ids["tvdb"] = a.split("?lang=")[0][
+                                a.index("com.plexapp.agents.thetvdb://") +
+                                len("com.plexapp.agents.thetvdb://"):].split("/", 1)[0]
+
+        elif "plex://movie" in a or "plex://episode" in a:
+            ref = self.video
+            if fill_trakt_ids and "plex://episode" in a:
+                ref = self.video.show()
+                if not ref.isFullObject():
+                    ref.reload()
+
+            for guid in ref.guids:
+                if not imdbNum and guid.id.startswith('imdb://'):
+                    imdbNum = guid.id.split('imdb://')[1]
+
+                if fill_trakt_ids:
+                    sabbr, gid = guid.id.split("://")
+                    try:
+                        gid = int(gid)
+                    except:
+                        pass
+
+                    trakt_ids[sabbr] = gid
+        if fill_trakt_ids:
+            # generate trakt slug
+            if vtype == "movie":
+                year = self.video.year.asInt()
+                trakt_ids['slug'] = util.slugify("{}{}".format(self.video.title, year and " {}".format(year) or ""))
+
+            util.DEBUG_LOG("Setting Trakt IDs: {}", trakt_ids)
+            # report IDs to trakt
+            xbmcgui.Window(10000).setProperty('script.trakt.ids', json.dumps(trakt_ids))
+
+        info = {
+            'mediatype': vtype,
+            'title': self.video.title,
+            'originaltitle': self.video.title,
+            'tvshowtitle': self.video.grandparentTitle,
+            'year': self.video.year.asInt(),
+            'plot': self.video.summary,
+            'path': meta.path,
+            'size': meta.size,
+            'imdbnumber': imdbNum
+        }
+        if vtype == "episode":
+            info.update({
+                'episode': self.video.index.asInt(),
+                'season': self.video.parentIndex.asInt(),
+            })
+        util.DEBUG_LOG("Setting VideoInfo: {}".format(
+            plexnetUtil.cleanObjTokens(info, flistkeys=[])
+        ))
+
+        li.setArt({
+            'poster': self.video.defaultThumb.asTranscodedImageURL(347, 518),
+            'fanart': self.video.defaultArt.asTranscodedImageURL(1920, 1080),
+            'thumb': self.video.defaultThumb.asTranscodedImageURL(256, 256),
+        })
+
+        if util.KODI_VERSION_MAJOR >= 20:
+            li.setInfo('video', {'size': info['size']})
+
+            vi = li.getVideoInfoTag()
+            vi.setMediaType(info['mediatype'])
+            vi.setTitle(info['title'])
+            vi.setOriginalTitle(info['originaltitle'])
+            vi.setTvShowTitle(info['tvshowtitle'])
+            vi.setYear(info['year'])
+            vi.setPlot(info['plot'])
+            vi.setPath(info['path'])
+            vi.setIMDBNumber(info['imdbnumber'])
+            if vtype == "episode":
+                vi.setEpisode(info['episode'])
+                vi.setSeason(info['season'])
+        else:
+            li.setInfo('video', info)
+
+        self.trigger('starting.video')
+        self.handler.queuingNext = False
+        self.handler.queuingSpecific = False
+        self.play(url, li)
+
+    def playVideoPlaylist(self, playlist, resume=False, handler=None, session_id=None):
+        if self.bgmPlaying:
+            self.stopAndWait()
+
+        if handler and isinstance(handler, SeekPlayerHandler):
+            util.DEBUG_LOG("PlayVideoPlaylist: Reusing old handler: {}", handler)
+            self.handler = handler
+            self.handler.reused = True
+            #self.handler.queuingNext = True
+            #self.handler.seekOnStart = 0
+            #self.handler.baseOffset = 0
+            #if self.handler.dialog:
+            #    self.handler.dialog.doClose(delete=True)
+            #self.handler.dialog = None
+            self.playerObject = None
+            self.currentTime = 0
+        else:
+            self.handler = SeekPlayerHandler(self, session_id or self.sessionID)
+
+        self.handler.playlist = playlist
+        if playlist.isRemote:
+            self.handler.playQueue = playlist
+        self.video = playlist.current()
+        self.video.softReload(includeChapters=1)
+        self.resume = resume
+        self.open()
+        self._playVideo(resume and self.video.viewOffset.asInt() or 0, seeking=handler and handler.SEEK_PLAYLIST or 0,
+                        force_update=True, session_id=session_id)
+
+    # def createVideoListItem(self, video, index=0):
+    #     url = 'plugin://script.plex/play?{0}'.format(base64.urlsafe_b64encode(video.serialize()))
+    #     li = xbmcgui.ListItem(self.video.title, path=url, thumbnailImage=self.video.defaultThumb.asTranscodedImageURL(256, 256))
+    #     vtype = self.video.type if self.video.vtype in ('movie', 'episode', 'musicvideo') else 'video'
+    #     li.setInfo('video', {
+    #         'mediatype': vtype,
+    #         'playcount': index,
+    #         'title': video.title,
+    #         'tvshowtitle': video.grandparentTitle,
+    #         'episode': video.index.asInt(),
+    #         'season': video.parentIndex.asInt(),
+    #         'year': video.year.asInt(),
+    #         'plot': video.summary
+    #     })
+    #     li.setArt({
+    #         'poster': self.video.defaultThumb.asTranscodedImageURL(347, 518),
+    #         'fanart': self.video.defaultArt.asTranscodedImageURL(1920, 1080),
+    #     })
+
+    #     return url, li
+
+    def playAudio(self, track, fanart=None, **kwargs):
+        if self.bgmPlaying:
+            self.stopAndWait()
+
+        self.ignoreStopEvents = True
+        self.sessionID = "AUD%s" % track.ratingKey
+        self.handler = AudioPlayerHandler(self, session_id=self.sessionID)
+        self.handler.setup()
+        self.playerObject = plexplayer.PlexAudioPlayer(track, session_id=self.sessionID)
+        url, li = self.createTrackListItem(track, fanart)
+        self.stopAndWait()
+        self.ignoreStopEvents = False
+
+        # maybe fixme: once started, self.sessionID will never be None for Audio
+        self.trigger('starting.audio')
+        self.play(url, li, **kwargs)
+
+    def playAlbum(self, album, startpos=-1, fanart=None, **kwargs):
+        if self.bgmPlaying:
+            self.stopAndWait()
+
+        self.ignoreStopEvents = True
+        self.sessionID = "ALB%s" % album.ratingKey
+        self.handler = AudioPlayerHandler(self, session_id=self.sessionID)
+        self.handler.setup()
+        self.playerObject = plexplayer.PlexAudioPlayer(session_id=self.sessionID)
+        plist = xbmc.PlayList(xbmc.PLAYLIST_MUSIC)
+        plist.clear()
+        index = 1
+        for track in album.tracks():
+            url, li = self.createTrackListItem(track, fanart, index=index)
+            plist.add(url, li)
+            index += 1
+        xbmc.executebuiltin('PlayerControl(RandomOff)')
+        self.stopAndWait()
+        self.ignoreStopEvents = False
+        self.trigger('starting.audio')
+        self.play(plist, startpos=startpos, **kwargs)
+
+    def playAudioPlaylist(self, playlist, startpos=-1, fanart=None, **kwargs):
+        if self.bgmPlaying:
+            self.stopAndWait()
+
+        self.ignoreStopEvents = True
+        self.sessionID = "PLS%s" % getattr(playlist, "ratingKey", getattr(playlist, "id", random.randint(0, 1000)))
+        self.handler = AudioPlayerHandler(self, session_id=self.sessionID)
+        self.handler.setup()
+        self.playerObject = plexplayer.PlexAudioPlayer(session_id=self.sessionID)
+        plist = xbmc.PlayList(xbmc.PLAYLIST_MUSIC)
+        plist.clear()
+        index = 1
+        for track in playlist.items():
+            url, li = self.createTrackListItem(track, fanart, index=index)
+            plist.add(url, li)
+            index += 1
+
+        if playlist.isRemote:
+            self.handler.setPlayQueue(playlist)
+        else:
+            if playlist.startShuffled:
+                plist.shuffle()
+                xbmc.executebuiltin('PlayerControl(RandomOn)')
+            else:
+                xbmc.executebuiltin('PlayerControl(RandomOff)')
+        self.stopAndWait()
+        self.ignoreStopEvents = False
+        self.trigger('starting.audio')
+        self.play(plist, startpos=startpos, **kwargs)
+
+    def createTrackListItem(self, track, fanart=None, index=0):
+        data = base64.urlsafe_b64encode(track.serialize().encode("utf8")).decode("utf8")
+        if not track.isFullObject():
+            track = track.reload()
+        url = self.playerObject.build(track)['url']
+        li = xbmcgui.ListItem(track.title, path=url)
+        info = {
+            'artist': six.text_type(track.originalTitle or track.grandparentTitle),
+            'title': six.text_type(track.title),
+            'album': six.text_type(track.parentTitle),
+            'discnumber': track.parentIndex.asInt(),
+            'tracknumber': track.get('index').asInt(),
+            'duration': int(track.duration.asInt() / 1000),
+            'playcount': index,
+            # fixme: this is not really necessary, as we don't go the plugin:// route anymore.
+            #        changing the track identification style would mean a bigger rewrite, though, so let's keep it.
+            'comment': 'PLEX-{0}:{1}'.format(track.ratingKey, data)
+        }
+
+        art = fanart or track.defaultArt
+        li.setArt({
+            'fanart': art.asTranscodedImageURL(1920, 1080),
+            'landscape': util.backgroundFromArt(art),
+            'thumb': track.defaultThumb.asTranscodedImageURL(800, 800),
+        })
+        if fanart:
+            li.setArt({'fanart': fanart})
+
+        if util.KODI_VERSION_MAJOR >= 20:
+            ai = li.getMusicInfoTag()
+            ai.setArtist(info['artist'])
+            ai.setTitle(info['title'])
+            ai.setAlbum(info['album'])
+            ai.setDisc(info['discnumber'])
+            ai.setTrack(info['tracknumber'])
+            ai.setDuration(info['duration'])
+            ai.setPlayCount(info['playcount'])
+            ai.setComment(info['comment'])
+        else:
+            li.setInfo('music', info)
+
+        return (url, li)
+
+    def onPrePlayStarted(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - PRE-PLAY; handler: %r' % self.handler)
+        self.trigger('preplay.started')
+        if not self.handler:
+            return
+        self.handler.onPrePlayStarted()
+
+    def onPlayBackStarted(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - STARTED')
+        if self._pendingStaleStop:
+            # the player event queue is ordered; the previous item's terminal event can't
+            # arrive after our start event anymore
+            self._pendingStaleStop = False
+        self.trigger('playback.started')
+
+        if not self.handler:
+            return
+        self.handler.onPlayBackStarted()
+
+    def onAVChange(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - AVChange: Time: {}', self.getTime() if self.isPlayingVideo() else "Not playing")
+        if not self.handler:
+            return
+        self.handler.onAVChange()
+
+    def onAVStarted(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - AVStarted: {}, Time: {}', self.handler,
+                       self.getTime() if self.isPlayingVideo() else "Not playing")
+        if self.pauseAfterPlaybackStarted:
+            self.control('pause')
+            self.pauseAfterPlaybackStarted = False
+
+        self.isExternal = self.isExternalPlayer()
+        self.trigger('av.started')
+        self.started = True
+        if not self.handler:
+            return
+        self.handler.onAVStarted()
+
+    def onPlayBackPaused(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - PAUSED')
+        if not self.handler:
+            return
+        self.handler.onPlayBackPaused()
+
+    def onPlayBackResumed(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - RESUMED')
+        if not self.handler:
+            return
+
+        self.handler.onPlayBackResumed()
+
+    @consumeStaleTerminal('stop')
+    def onPlayBackStopped(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - STOPPED' + (not self.started and ': FAILED' or ''))
+        if self.ignoreStopEvents:
+            return
+
+        if not self.started:
+            self.onPlayBackFailed()
+
+        if not self.handler:
+            return
+        self.handler.onPlayBackStopped()
+
+    @consumeStaleTerminal('ended')
+    def onPlayBackEnded(self):
+        if not self.sessionID:
+            return
+
+        if self.isExternal:
+            self.trigger('videowindow.closed', session_id=self.sessionID, video=self.video)
+
+        util.DEBUG_LOG('Player - ENDED' + (not self.started and ': FAILED' or ''))
+        if self.ignoreStopEvents:
+            return
+
+        if not self.started:
+            self.onPlayBackFailed()
+
+        if not self.handler:
+            return
+        self.handler.onPlayBackEnded()
+
+    def onPlayBackSeek(self, time, offset):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - SEEK: {} {:d}', time, offset)
+        if not self.handler:
+            return
+        self.handler.onPlayBackSeek(time, offset)
+
+    @consumeStaleTerminal('error')
+    def onPlayBackError(self):
+        if not self._ignorePlaybackFailure:
+            self.trigger('playback.failed')
+
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - ERROR: {}', self.handler)
+        if not self.handler:
+            return
+
+        if self.handler.onPlayBackFailed() and not self._ignorePlaybackFailure:
+            # Re-evaluate server connections so a subsequent retry uses the best available connection
+            try:
+                plexapp.SERVERMANAGER.periodicReachabilityCheck()
+            except:
+                util.ERROR("Failed to trigger reachability re-check after playback error")
+
+            self.ignoreStopEvents = True
+            util.showNotification('Playback Error!')
+            self.stopAndWait()
+            self.close()
+
+    def onPlayBackFailed(self):
+        if not self._ignorePlaybackFailure:
+            self.trigger('playback.failed')
+
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player - FAILED: {}', self.handler)
+        if not self.handler:
+            return
+
+        if self.handler.onPlayBackFailed() and not self._ignorePlaybackFailure:
+            # Re-evaluate server connections so a subsequent retry uses the best available connection
+            try:
+                plexapp.SERVERMANAGER.periodicReachabilityCheck()
+            except:
+                util.ERROR("Failed to trigger reachability re-check after playback failure")
+
+            util.showNotification(util.T(32448, 'Playback Failed!'))
+            self.stopAndWait()
+            self.close()
+            # xbmcgui.Dialog().ok('Failed', 'Playback failed')
+
+    def onVideoWindowOpened(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player: Video window opened')
+        try:
+            self.handler.onVideoWindowOpened()
+        except:
+            util.ERROR()
+
+    def onVideoWindowClosed(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player: Video window closed')
+        try:
+            self.handler.onVideoWindowClosed()
+            # self.stop()
+        except:
+            util.ERROR()
+
+    def onVideoOSD(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player: Video OSD opened')
+        try:
+            self.handler.onVideoOSD()
+        except:
+            util.ERROR()
+
+    def onSeekOSD(self):
+        if not self.sessionID:
+            return
+        util.DEBUG_LOG('Player: Seek OSD opened')
+        try:
+            self.handler.onSeekOSD()
+        except:
+            util.ERROR()
+
+    def stopAndWait(self, fade=False, fade_fast=False, deferred=False):
+        if self.isPlaying():
+            util.DEBUG_LOG('Player: Stopping and waiting...')
+            self.dontRequeueBGM = True
+            if fade and self.isPlayingAudio() and self.bgmPlaying and isinstance(self.handler, BGMPlayerHandler):
+                # bind the handler now. The deferred lambda used to re-read self.handler when the thread got
+                # around to running, by which point a new theme could own it - so closing one screen faded out
+                # the theme of the screen after it.
+                handler = self.handler
+                generation = handler.generation
+
+                # fade out
+                # don't block main thread if we're simply waiting for the theme music to fade out
+                if deferred:
+                    threading.Thread(target=lambda: handler.fadeOut(fast=fade_fast, stop=True),
+                                     name='PLEX:BGM-FADEOUT').start()
+                    return
+                else:
+                    handler.fadeOut(fast=fade_fast)
+                    if generation != self.bgmGeneration:
+                        # a new theme took over while we were fading; stopping the player now would stop it
+                        # rather than the theme we were asked to end
+                        util.DEBUG_LOG('Player: Stopping and waiting...superseded during fade, not stopping')
+                        return
+            self.stop()
+            if not util.MONITOR.abortRequested():
+                while not util.MONITOR.waitFor() and self.isPlaying():
+                    if util.MONITOR.abortRequested():
+                        break
+            util.MONITOR.waitForAbort(0.2)
+            util.DEBUG_LOG('Player: Stopping and waiting...Done')
+
+    def monitor(self):
+        if not self.thread or not self.thread.is_alive():
+            self.thread = threading.Thread(target=self._monitor, name='PLAYER:MONITOR')
+            self.thread.start()
+
+    def _monitor(self):
+        try:
+            while not util.MONITOR.abortRequested() and not self._closed:
+                if not self.isPlaying():
+                    util.DEBUG_LOG('Player: Idling...')
+
+                while not util.MONITOR.abortRequested() and not self._closed and \
+                        (not self.isPlaying() or (self.isPlaying() and not self.sessionID)):
+                    util.MONITOR.waitForAbort(0.1)
+
+                if self.isPlayingVideo():
+                    util.DEBUG_LOG('Monitoring video...')
+                    self._videoMonitor()
+                elif self.isPlayingAudio():
+                    if self.bgmPlaying:
+                        util.DEBUG_LOG('Monitoring BGM...')
+                        while self.isPlayingAudio() and self.bgmPlaying and not util.MONITOR.abortRequested() and \
+                                not self._closed:
+                            util.MONITOR.waitForAbort(0.1)
+                    else:
+                        util.DEBUG_LOG('Monitoring audio...')
+                        self._audioMonitor()
+                elif self.isPlaying():
+                    util.DEBUG_LOG('Monitoring pre-play...')
+
+                    # note: this might never be triggered depending on how fast the video playback starts.
+                    # don't rely on it in any way.
+                    self._preplayMonitor()
+
+            self.handler.close()
+            self.close()
+            util.DEBUG_LOG('Player: Closed')
+        finally:
+            self.trigger('session.ended')
+
+    def _preplayMonitor(self):
+        self.onPrePlayStarted()
+        while self.isPlaying() and not self.isPlayingVideo() and not self.isPlayingAudio() and not util.MONITOR.abortRequested() and not self._closed:
+            util.MONITOR.waitForAbort(0.1)
+
+        if not self.isPlayingVideo() and not self.isPlayingAudio():
+            self.onPlayBackFailed()
+
+    def _videoMonitor(self):
+        hasFullScreened = False
+
+        ct = 0
+        util.DEBUG_LOG("VideoMonitor: Initializing...")
+        while self.isPlayingVideo() and not util.MONITOR.abortRequested() and not self._closed:
+            if self.handler and (self.handler.queuingNext or self.handler.queuingSpecific):
+                # when waiting for the next item to be fully initialized, don't set self.currentTime, otherwise
+                # onPlaybackStarted could push an invalid trueTime
+                util.DEBUG_LOG("VideoMonitor: Waiting for next item to queue...")
+                while (self.handler and (self.handler.queuingNext or self.handler.queuingSpecific)
+                       and not util.MONITOR.abortRequested() and not self._closed):
+                    util.MONITOR.waitForAbort(0.1)
+
+                util.DEBUG_LOG("VideoMonitor: Started")
+
+            if not self.isExternal:
+                p_time = None
+                t_tries = 0
+                while not p_time and not util.MONITOR.abortRequested() and t_tries < 50 and not self.isExternal:
+                    try:
+                        self.currentTime = p_time = self.getTime()
+                    except RuntimeError:
+                        util.DEBUG_LOG("VideoMonitor: Waiting for player readiness...")
+                        t_tries += 1
+                        util.MONITOR.waitForAbort(0.1)
+
+            util.MONITOR.waitForAbort(0.1)
+            if xbmc.getCondVisibility('Window.IsActive(videoosd)'):
+                if not self.hasOSD:
+                    self.hasOSD = True
+                    self.onVideoOSD()
+            else:
+                self.hasOSD = False
+
+            if xbmc.getCondVisibility('Window.IsActive(seekbar)'):
+                if not self.hasSeekOSD:
+                    self.hasSeekOSD = True
+                    self.onSeekOSD()
+            else:
+                self.hasSeekOSD = False
+
+            if xbmc.getCondVisibility('VideoPlayer.IsFullscreen'):
+                if not hasFullScreened:
+                    hasFullScreened = True
+                    self.onVideoWindowOpened()
+            elif hasFullScreened and not xbmc.getCondVisibility('Window.IsVisible(busydialog)'):
+                hasFullScreened = False
+                self.onVideoWindowClosed()
+
+            ct += 1
+            if ct > 9:
+                ct = 0
+                self.handler.tick()
+
+        if hasFullScreened:
+            self.onVideoWindowClosed()
+
+    def _audioMonitor(self):
+        self.started = True
+        self.handler.onMonitorInit()
+        ct = 0
+        while self.isPlayingAudio() and not util.MONITOR.abortRequested() and not self._closed:
+            try:
+                self.currentTime = self.getTime()
+            except RuntimeError:
+                break
+
+            util.MONITOR.waitForAbort(0.1)
+
+            ct += 1
+            if ct > 9:
+                ct = 0
+                self.handler.tick()
+
+
+def shutdown():
+    global PLAYER
+    PLAYER.close(shutdown=True)
+    del PLAYER
+
+
+PLAYER = PlexPlayer().init()
