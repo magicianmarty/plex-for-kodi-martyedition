@@ -41,7 +41,8 @@
                 <width>40</width>
                 <height>{{ vscale(40) }}</height>
                 <onright>202</onright>
-                <ondown condition="String.IsEmpty(Window.Property(no.content.filtered))">50</ondown>
+                <ondown condition="String.IsEmpty(Window.Property(no.content.filtered)) + !String.IsEmpty(Window.Property(quickfilters.available))">620</ondown>
+                <ondown condition="String.IsEmpty(Window.Property(no.content.filtered)) + String.IsEmpty(Window.Property(quickfilters.available))">50</ondown>
                 <ondown condition="!String.IsEmpty(Window.Property(no.content.filtered))">600</ondown>
                 <font>font12</font>
                 <focusedcolor>FF000000</focusedcolor>
@@ -71,7 +72,8 @@
                 <onright condition="String.IsEmpty(Window.Property(no.content.filtered))">204</onright>
                 <onright condition="!String.IsEmpty(Window.Property(no.content.filtered))">600</onright>
                 <onleft>201</onleft>
-                <ondown condition="String.IsEmpty(Window.Property(no.content.filtered))">50</ondown>
+                <ondown condition="String.IsEmpty(Window.Property(no.content.filtered)) + !String.IsEmpty(Window.Property(quickfilters.available))">620</ondown>
+                <ondown condition="String.IsEmpty(Window.Property(no.content.filtered)) + String.IsEmpty(Window.Property(quickfilters.available))">50</ondown>
                 <ondown condition="!String.IsEmpty(Window.Property(no.content.filtered))">600</ondown>
                 <font>font12</font>
                 <focusedcolor>FF000000</focusedcolor>
@@ -92,6 +94,7 @@
             <width>260</width>
             <height>{{ vscale(75) }}</height>
             <onleft>202</onleft>
+            <ondown condition="!String.IsEmpty(Window.Property(quickfilters.available))">620</ondown>
             <ondown>50</ondown>
             <font>font12</font>
             <textcolor>FFFFFFFF</textcolor>
@@ -192,7 +195,8 @@
         <align>right</align>
         <itemgap>30</itemgap>
         <orientation>horizontal</orientation>
-        <onleft condition="String.IsEmpty(Window.Property(no.content.filtered))">304</onleft>
+        <onleft condition="String.IsEmpty(Window.Property(no.content.filtered)) + !String.IsEmpty(Window.Property(quickfilters.available))">620</onleft>
+        <onleft condition="String.IsEmpty(Window.Property(no.content.filtered)) + String.IsEmpty(Window.Property(quickfilters.available))">304</onleft>
         <onleft condition="!String.IsEmpty(Window.Property(no.content.filtered))">200</onleft>
         <onright>151</onright>
         <ondown>101</ondown>
@@ -276,6 +280,89 @@
         </control>
     </control>
     {% endblock filteropts_grouplist %}
+    <!-- Quick-filter chips: one-click DV / Atmos / HDR / 4K / Unplayed toggles -->
+    <control type="grouplist" id="620">
+        <visible>String.IsEmpty(Window.Property(hide.filteroptions)) + !String.IsEmpty(Window.Property(quickfilters.available))</visible>
+        <visible>!Integer.IsGreater(Container(101).ListItem.Property(index),5) + String.IsEmpty(Window.Property(no.content)) + !String.IsEmpty(Window.Property(initialized))</visible>
+        <animation effect="slide" time="200" end="0,{{ vscale(-115) }}" tween="quadratic" easing="out" condition="Integer.IsGreater(Container(101).ListItem.Property(index),5) + String.IsEmpty(Window.Property(content.filling))">Conditional</animation>
+        <animation effect="fade" start="0" end="100" time="200" reversible="true">VisibleChange</animation>
+        <left>70</left>
+        <posy>{{ vscale(135) }}</posy>
+        <width>1180</width>
+        <height>{{ vscale(65) }}</height>
+        <align>left</align>
+        <itemgap>14</itemgap>
+        <orientation>horizontal</orientation>
+        <onup>200</onup>
+        <ondown>101</ondown>
+        <onleft>300</onleft>
+        <onright>211</onright>
+        <control type="button" id="220">
+            <width max="440">auto</width>
+            <height>{{ vscale(65) }}</height>
+            <font>font12</font>
+            <textcolor>FFEDEDED</textcolor>
+            <focusedcolor>FF000000</focusedcolor>
+            <align>center</align><aligny>center</aligny>
+            <textoffsetx>26</textoffsetx><textoffsety>0</textoffsety>
+            <texturefocus colordiffuse="FFE5A00D" border="10">script.plex/white-square-rounded.png</texturefocus>
+            <texturenofocus condition="!String.IsEmpty(Window.Property(qf.dovi))" colordiffuse="FF8C6D0A" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <texturenofocus colordiffuse="30FFFFFF" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <label>Dolby Vision</label>
+        </control>
+        <control type="button" id="221">
+            <width max="440">auto</width>
+            <height>{{ vscale(65) }}</height>
+            <font>font12</font>
+            <textcolor>FFEDEDED</textcolor>
+            <focusedcolor>FF000000</focusedcolor>
+            <align>center</align><aligny>center</aligny>
+            <textoffsetx>26</textoffsetx><textoffsety>0</textoffsety>
+            <texturefocus colordiffuse="FFE5A00D" border="10">script.plex/white-square-rounded.png</texturefocus>
+            <texturenofocus condition="!String.IsEmpty(Window.Property(qf.atmos))" colordiffuse="FF8C6D0A" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <texturenofocus colordiffuse="30FFFFFF" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <label>Dolby Atmos</label>
+        </control>
+        <control type="button" id="222">
+            <width max="440">auto</width>
+            <height>{{ vscale(65) }}</height>
+            <font>font12</font>
+            <textcolor>FFEDEDED</textcolor>
+            <focusedcolor>FF000000</focusedcolor>
+            <align>center</align><aligny>center</aligny>
+            <textoffsetx>26</textoffsetx><textoffsety>0</textoffsety>
+            <texturefocus colordiffuse="FFE5A00D" border="10">script.plex/white-square-rounded.png</texturefocus>
+            <texturenofocus condition="!String.IsEmpty(Window.Property(qf.hdr))" colordiffuse="FF8C6D0A" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <texturenofocus colordiffuse="30FFFFFF" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <label>HDR</label>
+        </control>
+        <control type="button" id="223">
+            <width max="440">auto</width>
+            <height>{{ vscale(65) }}</height>
+            <font>font12</font>
+            <textcolor>FFEDEDED</textcolor>
+            <focusedcolor>FF000000</focusedcolor>
+            <align>center</align><aligny>center</aligny>
+            <textoffsetx>26</textoffsetx><textoffsety>0</textoffsety>
+            <texturefocus colordiffuse="FFE5A00D" border="10">script.plex/white-square-rounded.png</texturefocus>
+            <texturenofocus condition="!String.IsEmpty(Window.Property(qf.4k))" colordiffuse="FF8C6D0A" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <texturenofocus colordiffuse="30FFFFFF" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <label>4K</label>
+        </control>
+        <control type="button" id="224">
+            <width max="440">auto</width>
+            <height>{{ vscale(65) }}</height>
+            <font>font12</font>
+            <textcolor>FFEDEDED</textcolor>
+            <focusedcolor>FF000000</focusedcolor>
+            <align>center</align><aligny>center</aligny>
+            <textoffsetx>26</textoffsetx><textoffsety>0</textoffsety>
+            <texturefocus colordiffuse="FFE5A00D" border="10">script.plex/white-square-rounded.png</texturefocus>
+            <texturenofocus condition="!String.IsEmpty(Window.Property(qf.unwatched))" colordiffuse="FF8C6D0A" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <texturenofocus colordiffuse="30FFFFFF" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <label>Unplayed</label>
+        </control>
+    </control>
     <control type="label">
         <right>213</right>
         <posy>{{ vscale(35) }}</posy>
