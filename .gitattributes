@@ -1,1 +1,11 @@
 *.tpl linguist-language=Jinja
+
+# Kept out of the installable zip (git archive) and of GitHub's own source
+# archives, which is what the in-app updater downloads.
+/.github export-ignore
+/tests export-ignore
+/pytest.ini export-ignore
+/.flake8 export-ignore
+/requirements-test.txt export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
