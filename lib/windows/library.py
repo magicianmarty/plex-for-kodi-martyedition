@@ -482,6 +482,9 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
         self.subOptionCache = {}
         self._filterTypeByKey = {}
         self.closing = False
+        # Cache of {'dovi': set(ratingKeys), 'atmos': set(...)} for grid badges, fetched
+        # once per section in _ensureBadgeKeys(). None = not fetched yet.
+        self._badgeKeys = None
 
         self.dcpjPos = 0
         self.dcpjThread = None
@@ -1882,9 +1885,39 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
             self.lock.release()
             break
 
+    def _ensureBadgeKeys(self):
+        # Fetch once per section: the ratingKeys the server flags as Dolby Vision and
+        # Dolby Atmos, so grid tiles can be badged without loading per-item streams.
+        if self._badgeKeys is not None:
+            return
+        self._badgeKeys = {'dovi': set(), 'atmos': set()}
+        if self.section.TYPE != 'movie':
+            return
+        libtype = self.librarySettings.getItemType() or self.section.TYPE
+        stype = plexobjects.SEARCHTYPES.get(libtype)
+        base = self.section.key if str(self.section.key).startswith('/') \
+            else '/library/sections/{0}'.format(self.section.key)
+        for fkey in ('dovi', 'atmos'):
+            try:
+                path = '{0}/all?{1}{2}=1'.format(base, 'type={0}&'.format(stype) if stype else '', fkey)
+                items = plexobjects.listItems(self.section.server, path, bytag=True)
+                self._badgeKeys[fkey] = {str(i.ratingKey) for i in items if getattr(i, 'ratingKey', None)}
+            except Exception:
+                util.ERROR('quick-filter badges: fetch failed for {0}'.format(fkey))
+
+    def _stampBadges(self, mli, obj):
+        keys = self._badgeKeys
+        if not keys:
+            return
+        rk = str(getattr(obj, 'ratingKey', '') or '')
+        mli.setProperty('badge.dovi', '1' if rk in keys['dovi'] else '')
+        mli.setProperty('badge.atmos', '1' if rk in keys['atmos'] else '')
+
     def _chunkCallback(self, items, start):
         if not self.showPanelControl or not items or self.closing:
             return
+
+        self._ensureBadgeKeys()
 
         with self.lock:
             pos = start
@@ -1901,6 +1934,7 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                     mli = self.showPanelControl[pos]
                     if obj:
                         mli.dataSource = obj
+                        self._stampBadges(mli, obj)
                         mli.setProperty('index', str(pos))
                         if obj.index:
                             subtitle = u'{0} \u2022 {1}'.format(T(32310, 'S').format(obj.parentIndex),
@@ -1936,6 +1970,7 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                     mli = self.showPanelControl[pos]
                     if obj:
                         mli.dataSource = obj
+                        self._stampBadges(mli, obj)
                         mli.setProperty('index', str(pos))
                         mli.setLabel(u'{0}\n{1}'.format(obj.parentTitle, obj.title))
 
@@ -1982,6 +2017,7 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                             else:
                                 mli.setThumbnailImage(obj.defaultThumb.asTranscodedImageURL(*thumbDim))
                         mli.dataSource = obj
+                        self._stampBadges(mli, obj)
                         mli.setProperty('summary', obj.get('summary'))
 
                         # get secondary sort based info

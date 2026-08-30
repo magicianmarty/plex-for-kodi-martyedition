@@ -100,6 +100,7 @@
                             </control>
                         </control>
                         {% include "includes/watched_indicator.xml.tpl" with xoff=244 & uw_size=45 & with_count=True & scale="medium" %}
+                        {% include "includes/av_badges.xml.tpl" %}
                         <control type="label">
                             <scroll>false</scroll>
                             <posx>0</posx>
@@ -197,6 +198,7 @@
                                 </control>
                             </control>
                             {% include "includes/watched_indicator.xml.tpl" with xoff=244 & uw_size=45 & with_count=True & scale="medium" %}
+                        {% include "includes/av_badges.xml.tpl" %}
                             <control type="label">
                                 <scroll>true</scroll>
                                 <posx>0</posx>
