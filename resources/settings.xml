@@ -202,6 +202,26 @@
                     <default>true</default>
                     <control type="toggle"/>
                 </setting>
+                <setting id="longseek_reopen" type="boolean" label="35050" help="35051">
+                    <level>0</level>
+                    <default>true</default>
+                    <control type="toggle"/>
+                </setting>
+                <setting id="longseek_reopen_threshold" type="integer" label="35052" help="35053">
+                    <level>0</level>
+                    <default>60</default>
+                    <dependencies>
+                        <dependency type="enable" setting="longseek_reopen" operator="is">true</dependency>
+                    </dependencies>
+                    <constraints>
+                        <minimum>10</minimum>
+                        <step>10</step>
+                        <maximum>600</maximum>
+                    </constraints>
+                    <control type="slider" format="integer">
+                        <popup>false</popup>
+                    </control>
+                </setting>
                 <setting id="seamless_branching_lav_mode" type="integer" label="34066" help="34067">
                     <level>0</level>
                     <default>4</default>

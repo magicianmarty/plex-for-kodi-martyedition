@@ -3356,3 +3356,19 @@ msgstr ""
 msgctxt "#35049"
 msgid "Local mode reaches your server over plain HTTP, so \"Allow Insecure Connections\" has been set to \"Always\".\n\nYour server needs the matching setting: in Plex under Settings > Network, \"Secure connections\" has to be \"Preferred\" - with \"Required\" the server refuses these connections."
 msgstr ""
+
+msgctxt "#35050"
+msgid "Reopen stream for long seeks"
+msgstr ""
+
+msgctxt "#35051"
+msgid "Dolby Vision profile 7 decodes a base and an enhancement layer in lockstep. Seeking a long way inside a running stream can leave both decoders without their reference frames, which stalls playback for good. With this on, long seeks reopen the stream at the target position instead - the same path a resume takes - so both decoders start clean. Short seeks are unaffected and stay instant."
+msgstr ""
+
+msgctxt "#35052"
+msgid "Long seek threshold (seconds)"
+msgstr ""
+
+msgctxt "#35053"
+msgid "Seeks longer than this reopen the stream instead of seeking inside it, costing a short reload. Anything shorter seeks in place as usual."
+msgstr ""

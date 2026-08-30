@@ -544,6 +544,35 @@ class SeekPlayerHandler(BasePlayerHandler):
                     del d
                     util.garbageCollect()
 
+    def _reopenForLongSeek(self, offset):
+        """Whether to reopen the stream at :offset: instead of seeking inside it.
+
+        Dolby Vision profile 7 decodes a base and an enhancement layer in lockstep.
+        A long seek inside a running stream can leave both decoders referencing
+        frames that are no longer in their DPB ("config_mc_buffer ... not in list0"
+        -> "set error_mark"), which stalls the pipeline permanently -- the demuxer
+        stops draining and playback never recovers. Reopening rebuilds both
+        decoders at the target, which is the same path a resume already takes.
+        """
+        if not util.addonSettings.longseekReopen:
+            return False
+
+        threshold = util.addonSettings.longseekReopenThreshold * 1000
+        if threshold <= 0:
+            return False
+
+        try:
+            distance = abs(offset - self.trueTime * 1000)
+        except Exception:
+            return False
+
+        if distance < threshold:
+            return False
+
+        util.DEBUG_LOG("SeekHandler: long seek of {0} ms exceeds threshold {1} ms, reopening stream "
+                       "at {2} instead of seeking in place", int(distance), int(threshold), offset)
+        return True
+
     def seek(self, offset, settings_changed=False, seeking=SEEK_IN_PROGRESS, skip_alt_seek_fix=False):
         util.DEBUG_LOG(
             "SeekHandler: offset={0}, settings_changed={1}, seeking={2}, state={3}".format(offset,
@@ -559,7 +588,7 @@ class SeekPlayerHandler(BasePlayerHandler):
             util.DEBUG_LOG('New absolute player offset: {0}', self.offset)
 
             if self.player.playerObject.offsetIsValid(offset / 1000) and not self.player.isExternal:
-                if self.seekAbsolute(offset, skip_alt_seek_fix=skip_alt_seek_fix):
+                if self.seekAbsolute(offset, skip_alt_seek_fix=skip_alt_seek_fix, allow_reopen=True):
                     return
 
         self.seeking = self.SEEK_IN_PROGRESS
@@ -623,11 +652,18 @@ class SeekPlayerHandler(BasePlayerHandler):
             util.setGlobalBoolProperty('playback_started_event', False)
             self.pbStartedRemoved = True
 
-    def seekAbsolute(self, seek=None, skip_alt_seek_fix=False):
+    def seekAbsolute(self, seek=None, skip_alt_seek_fix=False, allow_reopen=False):
+        # decided before seekOnStart is assigned below: trueTime reports the *target* once
+        # seekOnStart is set, which would make the distance measure zero
+        reopen = allow_reopen and self._reopenForLongSeek(seek)
+
         self.seekOnStart = seek if seek is not None else self.seekOnStart if self.seekOnStart is not None else None
 
         if self.player.isExternal:
             return True
+
+        if reopen:
+            return False
 
         if self.seekOnStart is not None:
             seekSeconds = self.seekOnStart / 1000.0

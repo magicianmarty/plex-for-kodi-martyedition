@@ -80,6 +80,8 @@ class AddonSettings(object):
         ("coreelec_wait_player_time1", True),
         ("seamless_branching_lav_mode", 4),
         ("seekbackonstart_delay", 500),
+        ("longseek_reopen", True),
+        ("longseek_reopen_threshold", 60),
     )
 
     def __init__(self):
