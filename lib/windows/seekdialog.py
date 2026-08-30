@@ -2119,7 +2119,8 @@ class SeekDialog(kodigui.BaseDialog, windowutils.GoHomeMixin, PlexSubtitleDownlo
         ratio = offset / float(self.duration)
         w = int(ratio * self.SEEK_IMAGE_WIDTH)
 
-        current_w = int(self.offset / float(self.duration) * self.SEEK_IMAGE_WIDTH)
+        current_offset = self.offset if self.offset is not None else 0
+        current_w = int(current_offset / float(self.duration) * self.SEEK_IMAGE_WIDTH)
 
         bifx = (w - int(ratio * 324)) + self.BAR_X
         # bifx = w
