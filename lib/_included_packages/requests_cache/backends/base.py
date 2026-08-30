@@ -7,7 +7,7 @@
     Contains BaseCache class which can be used as in-memory cache backend or
     extended to support persistence.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 from copy import copy
 from io import BytesIO
@@ -43,7 +43,7 @@ class BaseCache(object):
         .. note:: Response is reduced before saving (with :meth:`reduce_response`)
                   to make it picklable
         """
-        self.responses[key] = self.reduce_response(response), datetime.utcnow()
+        self.responses[key] = self.reduce_response(response), datetime.now(timezone.utc).replace(tzinfo=None)
 
     def add_key_mapping(self, new_key, key_to_response):
         """
