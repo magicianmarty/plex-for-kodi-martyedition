@@ -61,6 +61,7 @@
             <posy>0</posy>
             <width>1800</width>
             <height>1198</height>
+            <onup condition="!String.IsEmpty(Window.Property(quickfilters.available))">620</onup>
             <onup condition="Integer.IsLess(Container(101).ListItem.Property(index),5)">300</onup>
             <onup condition="Integer.IsLess(Container(101).ListItem.Property(index),10) + Integer.IsGreaterOrEqual(Container(101).ListItem.Property(index),5)">600</onup>
             <onright>151</onright>

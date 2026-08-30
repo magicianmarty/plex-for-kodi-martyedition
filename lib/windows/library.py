@@ -230,8 +230,24 @@ FILTER_LABELS = {
     'location': (34034, 'Folder Location'),
     'unwatched': (32368, 'Unplayed'),
     'hdr': (34037, 'HDR'),
-    'dovi': (34036, 'DOVI'),
+    'dovi': (None, 'Dolby Vision'),  # nicer than the #34036 "DOVI" abbrev; brand name is universal
+    'atmos': (None, 'Dolby Atmos'),
 }
+
+
+# One-click quick-filter chips shown on the library bar for the most-wanted filters.
+# Each maps to a server boolean filter (dovi/atmos/hdr/unwatched -> "<key>=1") or the 4K
+# resolution value filter ("resolution=4k"). Only surfaced for video sections. The `id`
+# values must stay free in the library templates (220-224). `prop` is the window property
+# the skin reads to paint the active (gold) chip state.
+QUICK_FILTERS = (
+    {'id': 220, 'kind': 'bool', 'key': 'dovi',          'label': 'Dolby Vision', 'prop': 'qf.dovi'},
+    {'id': 221, 'kind': 'bool', 'key': 'atmos',         'label': 'Dolby Atmos',  'prop': 'qf.atmos'},
+    {'id': 222, 'kind': 'bool', 'key': 'hdr',           'label': 'HDR',          'prop': 'qf.hdr'},
+    {'id': 223, 'kind': 'res',  'key': 'resolution:4k', 'label': '4K',           'prop': 'qf.4k'},
+    {'id': 224, 'kind': 'bool', 'key': 'unwatched',     'label': 'Unplayed',     'prop': 'qf.unwatched'},
+)
+QUICK_FILTER_BY_ID = {qf['id']: qf for qf in QUICK_FILTERS}
 
 
 def setItemType(type_=None):
@@ -661,6 +677,8 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
             self.itemTypeButtonClicked()
         elif controlID == self.SEARCH_BUTTON_ID:
             self.searchButtonClicked()
+        elif controlID in QUICK_FILTER_BY_ID:
+            self.quickFilterClicked(controlID)
 
     def onFocus(self, controlID):
         self.lastFocusID = controlID
@@ -1346,6 +1364,37 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
         if self.filter or choice == 'clear_filter' or result.get('is_bool') or self._filterTypeByKey.get(choice) == 'boolean':
             self.fill()
 
+    def quickFilterClicked(self, controlID):
+        # One-click quick-filter chip. Booleans (dovi/atmos/hdr/unwatched) toggle in
+        # boolFilters; 4K toggles the resolution value filter. Mirrors the persistence
+        # and refill that filter1ButtonClicked() performs.
+        qf = QUICK_FILTER_BY_ID.get(controlID)
+        if not qf:
+            return
+
+        if qf['kind'] == 'bool':
+            key = qf['key']
+            if self.boolFilters.get(key):
+                del self.boolFilters[key]
+            else:
+                self.boolFilters[key] = True
+            self.librarySettings.setSetting('filter.bools', self.boolFilters)
+        elif qf['kind'] == 'res':
+            # Only one value filter can be active at a time; toggling 4K off clears it.
+            val = qf['key'].split(':', 1)[1]
+            active = bool(self.filter and self.filter.get('type') == 'resolution'
+                          and self.filter.get('sub', {}).get('val') == val)
+            if active:
+                self.filter = None
+            else:
+                self.filter = {'type': 'resolution',
+                               'display': self._filterLabel('resolution', 'Resolution'),
+                               'sub': {'val': val, 'display': qf['label']}}
+            self.librarySettings.setSetting('filter', self.filter)
+
+        self.updateFilterDisplay()
+        self.fill()
+
     def clearFilters(self, skip_display=False):
         self.filter = None
         self.boolFilters = {}
@@ -1377,6 +1426,22 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
             if not boolLabels:
                 boolLabels = [T(32345, 'All')]
             self.setProperty('filter1.display', ", ".join(boolLabels))
+
+        self._updateQuickFilterChips()
+
+    def _updateQuickFilterChips(self):
+        # Drive the quick-filter chip bar: availability (video sections only) and each
+        # chip's active state, which the skin reads to paint the gold "on" look.
+        available = self.section.TYPE in ('movie', 'show', 'movies_shows')
+        self.setProperty('quickfilters.available', available and '1' or '')
+        for qf in QUICK_FILTERS:
+            if qf['kind'] == 'bool':
+                on = bool(self.boolFilters.get(qf['key']))
+            else:  # 'res' -> 4K value filter
+                val = qf['key'].split(':', 1)[1]
+                on = bool(self.filter and self.filter.get('type') == 'resolution'
+                          and self.filter.get('sub', {}).get('val') == val)
+            self.setProperty(qf['prop'], on and '1' or '')
 
     def showPanelClicked(self):
         mli = self.showPanelControl.getSelectedItem()

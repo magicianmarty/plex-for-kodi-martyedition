@@ -14,7 +14,8 @@
     <align>right</align>
     <itemgap>30</itemgap>
     <orientation>horizontal</orientation>
-    <onleft condition="String.IsEmpty(Window.Property(no.content.filtered))">304</onleft>
+    <onleft condition="String.IsEmpty(Window.Property(no.content.filtered)) + !String.IsEmpty(Window.Property(quickfilters.available))">620</onleft>
+    <onleft condition="String.IsEmpty(Window.Property(no.content.filtered)) + String.IsEmpty(Window.Property(quickfilters.available))">304</onleft>
     <onleft condition="!String.IsEmpty(Window.Property(no.content.filtered))">200</onleft>
     <onright>151</onright>
     <ondown>101</ondown>
