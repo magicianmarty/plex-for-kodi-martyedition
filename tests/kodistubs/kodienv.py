@@ -203,7 +203,12 @@ class KodiEnv(object):
                 head = fp.read(2048)
         except (IOError, OSError):
             return fallback
-        match = re.search(r'\b{0}="([^"]*)"'.format(attr), head)
+        # Scoped to the <addon> element: an unscoped search for version="..."
+        # finds the XML declaration first and reports the addon as "1.0".
+        element = re.search(r"<addon\b[^>]*>", head)
+        if not element:
+            return fallback
+        match = re.search(r'\b{0}="([^"]*)"'.format(attr), element.group(0))
         return match.group(1) if match else fallback
 
     # Kodi's own Settings.GetSettingValue answers. Deliberately *not* all of

@@ -4,6 +4,7 @@
 from __future__ import absolute_import
 
 import copy
+import importlib
 import os
 import shutil
 import tempfile
@@ -40,6 +41,30 @@ def ensure_plex_interface():
     import lib.plex  # noqa: F401
     from plexnet import util as pnUtil
     return pnUtil.INTERFACE
+
+
+def import_window_module(name):
+    """
+    Import a module under `lib.windows.` and hand it back.
+
+    Anything in lib/windows/ pulls in lib.player, which builds PLAYER at import
+    time and starts a non-daemon PLAYER:MONITOR thread. The stub's
+    waitForAbort() does not block, so that thread would spin against ENV for the
+    rest of the run and then keep the interpreter alive at exit. Set the abort
+    flag first so it stops on its first pass, and join it before restoring.
+    """
+    previous = ENV.abort_requested
+    ENV.abort_requested = True
+    try:
+        module = importlib.import_module(name)
+        from lib import player
+        thread = getattr(player.PLAYER, "thread", None)
+        if thread is not None:
+            thread.join(timeout=30)
+            assert not thread.is_alive(), "PLAYER:MONITOR did not stop"
+    finally:
+        ENV.abort_requested = previous
+    return module
 
 
 class KodiTestCase(unittest.TestCase):
