@@ -18,8 +18,9 @@ module level, the same way Kodi provides them as `script.module.requests` and
 `script.module.six`.
 
 CI (`.github/workflows/tests.yml`) runs the suite on Python 3.8 (Kodi 19/20),
-3.11 (Kodi 21) and 3.13 plus one Windows leg, byte-compiles the add-on on 3.8
-and runs flake8.
+3.11 (Kodi 21) and 3.14 (Kodi 22) plus one Windows leg, byte-compiles the
+add-on on 3.8 and runs flake8. One branch has to run on all of them, which is
+what `test_python_compat.py` is there to keep true.
 
 Tests are plain `unittest.TestCase` classes, so both runners work. pytest is
 optional and only buys better output and `-k` filtering.

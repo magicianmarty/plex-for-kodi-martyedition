@@ -21,13 +21,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Kodi 19/20 ship Python 3.8, Kodi 21 ships 3.11 - those two are the
-          # ones an add-on actually runs on. 3.13 is there so the suite keeps
-          # working on a current dev machine. setup-python has no 3.8 build for
-          # ubuntu-24.04, hence the pinned runner.
+          # One branch has to run on every Kodi we support, and they span six
+          # years of stdlib removals: 19/20 ship Python 3.8, 21 ships 3.11 and
+          # 22 (Piers) ships 3.14. setup-python has no 3.8 build for
+          # ubuntu-24.04, hence the pinned runner on that leg.
           - {name: "py3.8 (Kodi 19/20)", python: "3.8", os: ubuntu-22.04}
           - {name: "py3.11 (Kodi 21)", python: "3.11", os: ubuntu-latest}
-          - {name: "py3.13", python: "3.13", os: ubuntu-latest}
+          - {name: "py3.14 (Kodi 22)", python: "3.14", os: ubuntu-latest}
           # Kodi on Windows is a first-class target and the addon does its own
           # path handling; run one leg there so separators cannot rot.
           - {name: "py3.11 windows", python: "3.11", os: windows-latest}

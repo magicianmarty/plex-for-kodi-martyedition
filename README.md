@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/magicianmarty/plex-for-kodi-martyedition/actions/workflows/tests.yml/badge.svg)](https://github.com/magicianmarty/plex-for-kodi-martyedition/actions/workflows/tests.yml)
 [![package](https://github.com/magicianmarty/plex-for-kodi-martyedition/actions/workflows/package.yml/badge.svg)](https://github.com/magicianmarty/plex-for-kodi-martyedition/actions/workflows/package.yml)
-[![Kodi 19–21](https://img.shields.io/badge/Kodi-19%20%7C%2020%20%7C%2021-blue)](https://kodi.tv)
+[![Kodi 19–22](https://img.shields.io/badge/Kodi-19%20%7C%2020%20%7C%2021%20%7C%2022-blue)](https://kodi.tv)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-lightgrey)](LICENSE.txt)
 
 A Plex client for Kodi, tuned for people who actually live in their library:
@@ -46,7 +46,8 @@ changes follow from that.
 4. **Fix the bug, don't route around it.** Crashes get fixed at the cause and
    covered by a test, not defended against at the call site.
 5. **Prove it.** Behaviour that can be tested outside Kodi is tested outside
-   Kodi, and CI runs the suite on the Python versions Kodi actually ships.
+   Kodi, and CI runs the suite on every Python version Kodi ships — 3.8
+   through 3.14, from one branch.
 
 ## What's different so far
 
@@ -55,7 +56,8 @@ changes follow from that.
 | **One-click quick-filter chips** | An always-visible chip bar on the library views: Dolby Vision, Dolby Atmos, HDR, 4K, Unplayed. One press each way instead of a three-to-five click dive through the filter dropdown. The chips drive the existing filter plumbing, so they persist per section and stack with each other; 4K drives the resolution filter. Video sections only. |
 | **Filters named like the format** | The dropdown says "Dolby Vision" rather than `DOVI`, and gained a "Dolby Atmos" entry — the server advertises that filter, upstream just had no label for it. |
 | **Seek OSD crash fix** | `updateProgress()` divided by an offset that is `None` until the first playback tick lands, which killed the seek OSD for the rest of the session with a `TypeError`. Now guarded the way `trueOffset()` already was. |
-| **Tests and CI** | The suite runs on every push and pull request across Python 3.8 / 3.11 / 3.13 and Windows, the add-on is byte-compiled against Kodi 19's Python, and an installable zip is built and checked on every run. |
+| **Kodi 22 (Piers) support** | Kodi 22 ships Python 3.14, which drops modules the add-on's vendored packages still reached for. The vendored Python 2 `typing` backport is gone (it sat ahead of the stdlib on `sys.path`), `datetime.utcnow()` is replaced without changing what existing caches compare against, and `pkg_resources` is now optional. `addon.xml` needs nothing: Kodi 22 offers `xbmc.python` 3.1.0, a minor bump over the 3.0.0 we require. |
+| **Tests and CI** | The suite runs on every push and pull request across Python 3.8 (Kodi 19/20), 3.11 (Kodi 21) and 3.14 (Kodi 22) plus Windows, the add-on is byte-compiled against Kodi 19's Python, and an installable zip is built and checked on every run. |
 
 ## Install
 
@@ -98,7 +100,7 @@ package manager owns that path.
 
 ## Requirements
 
-- Kodi 19 (Matrix), 20 (Nexus) or 21 (Omega)
+- Kodi 19 (Matrix), 20 (Nexus), 21 (Omega) or 22 (Piers)
 - A Plex Media Server to talk to
 - Optional and worth it: pannal's
   [Plextuary](https://github.com/pannal/skin.plextuary) skin
@@ -121,7 +123,7 @@ CI runs on every push and pull request:
 
 | Workflow | What it does |
 |---|---|
-| [`tests.yml`](.github/workflows/tests.yml) | pytest on Python 3.8 (Kodi 19/20), 3.11 (Kodi 21) and 3.13, plus a Windows leg; byte-compiles the add-on on 3.8, so the files no test imports still have to parse where they run; flake8, errors only |
+| [`tests.yml`](.github/workflows/tests.yml) | pytest on Python 3.8 (Kodi 19/20), 3.11 (Kodi 21) and 3.14 (Kodi 22), plus a Windows leg; byte-compiles the add-on on 3.8, so the files no test imports still have to parse where they run; flake8, errors only |
 | [`package.yml`](.github/workflows/package.yml) | builds the installable zip, checks it holds exactly one `script.plexmod/` folder with no test or CI files in it, and attaches it to the release on a `v*` tag |
 
 Pull requests are welcome. Keep the suite green, cover behaviour you change, and
