@@ -313,7 +313,7 @@ class MajorChangesTest(KodiTestCase):
 
     def unpack_with(self, extra=None, service_body=None):
         installed_service = os.path.join(self.installed, "lib", "service_runner.py")
-        with open(installed_service, "r", encoding="utf-8") as fp:
+        with open(installed_service, "rb") as fp:
             current = fp.read()
         make_addon_zip(self.upd.archive_path,
                        service_body=current if service_body is None else service_body,
@@ -321,8 +321,15 @@ class MajorChangesTest(KodiTestCase):
         self.upd.unpack()
 
     def copy_installed(self, *relparts):
-        """The installed copy of a file, verbatim, so digests match."""
-        with open(os.path.join(self.installed, *relparts), "r", encoding="utf-8") as fp:
+        """
+        The installed copy of a file, byte for byte, so digests match.
+
+        Binary on purpose: get_digest() hashes raw bytes, and on a CRLF
+        checkout - which is what git gives you on Windows by default - a
+        text-mode read drops the \r and the "identical" copy then digests
+        differently from the file it was copied from.
+        """
+        with open(os.path.join(self.installed, *relparts), "rb") as fp:
             return fp.read()
 
     def test_an_identical_service_file_is_not_a_major_change(self):

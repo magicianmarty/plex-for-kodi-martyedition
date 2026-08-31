@@ -6,10 +6,21 @@ before anything under `lib/` is imported.
 ## Running
 
 ```sh
+pip install -r requirements-test.txt       # pytest, requests, six, flake8
 python3 -m pytest                          # nicest output
 python3 -m pytest tests/test_templates.py  # one area
-python3 -m unittest discover -s tests -t . # no dependencies at all
+python3 -m unittest discover -s tests -t . # no test dependencies at all
+python3 -m flake8 --count .                # the errors-only gate CI runs
 ```
+
+`requests` and `six` are not optional — `lib/__init__.py` imports them at
+module level, the same way Kodi provides them as `script.module.requests` and
+`script.module.six`.
+
+CI (`.github/workflows/tests.yml`) runs the suite on Python 3.8 (Kodi 19/20),
+3.11 (Kodi 21) and 3.14 (Kodi 22) plus one Windows leg, byte-compiles the
+add-on on 3.8 and runs flake8. One branch has to run on all of them, which is
+what `test_python_compat.py` is there to keep true.
 
 Tests are plain `unittest.TestCase` classes, so both runners work. pytest is
 optional and only buys better output and `-k` filtering.
@@ -95,10 +106,21 @@ explicitly re-`load()` the singleton; see `tests/test_advancedsettings.py`.
 | plexnet media decision engine | `test_plexnet_mde.py` |
 | plexnet play queue, video session helpers | `test_plexnet_playqueue.py` |
 | plexnet version handling | `test_plexnet_verlib.py` |
+| Quick-filter chips (DV/Atmos/HDR/4K/Unplayed) | `test_quick_filters.py` |
+| SeekDialog progress bar arithmetic | `test_seekdialog_progress.py` |
+| `addon.xml`: the install and self-update contract | `test_addon_metadata.py` |
 
-`lib/windows/` (the GUI classes) is deliberately **not** covered — it needs a
-real `xbmcgui` window manager. Window logic that does not touch controls is
-reachable and would be the natural next step.
+Most of `lib/windows/` (the GUI classes) is **not** covered — it needs a real
+`xbmcgui` window manager. Logic that does not touch controls is reachable:
+`base.import_window_module()` imports a window module safely and the test then
+drives an uninitialised instance (`Cls.__new__(Cls)`), filling in the handful
+of attributes the method under test reads. `test_quick_filters.py` and
+`test_seekdialog_progress.py` are worked examples.
+
+Import through that helper, not directly: anything under `lib/windows/` pulls
+in `lib.player`, which builds `PLAYER` at import time and starts a non-daemon
+monitor thread. The stub's `waitForAbort()` does not block, so that thread
+would spin for the rest of the run and then hold the interpreter open at exit.
 
 ## Watch out for: multi-line `.po` entries
 

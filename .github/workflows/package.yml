@@ -1,0 +1,71 @@
+name: package
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zip:
+    name: build installable zip
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # creating the release on a tag
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the add-on version
+        id: addon
+        run: |
+          version=$(python - <<'PY'
+          import xml.etree.ElementTree as ET
+          print(ET.parse("addon.xml").getroot().get("version"))
+          PY
+          )
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Kodi installs whatever directory the zip contains, and that directory
+      # name has to be the add-on id. git archive gives us exactly the tracked
+      # files, minus everything marked export-ignore in .gitattributes.
+      - name: Build script.plexmod-${{ steps.addon.outputs.version }}.zip
+        run: |
+          mkdir -p dist
+          git archive --format=zip --prefix=script.plexmod/ \
+            -o "dist/script.plexmod-${{ steps.addon.outputs.version }}.zip" HEAD
+
+      - name: Check the zip installs the way Kodi expects
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+
+          path = glob.glob("dist/*.zip")[0]
+          names = zipfile.ZipFile(path).namelist()
+          roots = {name.split("/")[0] for name in names}
+          if roots != {"script.plexmod"}:
+              sys.exit("zip must contain exactly one script.plexmod/ folder, got {0}".format(roots))
+          for required in ("script.plexmod/addon.xml", "script.plexmod/default.py",
+                           "script.plexmod/service.py", "script.plexmod/lib/main.py"):
+              if required not in names:
+                  sys.exit("{0} missing from the zip".format(required))
+          leaked = [n for n in names if n.startswith(("script.plexmod/tests/",
+                                                      "script.plexmod/.github/"))]
+          if leaked:
+              sys.exit("development files leaked into the zip: {0}".format(leaked[:5]))
+          print("{0}: {1} files".format(path, len(names)))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: script.plexmod-${{ steps.addon.outputs.version }}
+          path: dist/*.zip
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/*.zip --generate-notes --verify-tag

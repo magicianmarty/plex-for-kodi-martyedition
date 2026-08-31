@@ -1,0 +1,11 @@
+# Everything the suite needs on top of the standard library. The Kodi APIs are
+# stubbed in tests/kodistubs/, so no Kodi and no network are involved.
+pytest>=7.0
+
+# Imported at module level by lib/__init__.py. Kodi provides these as
+# script.module.requests and script.module.six; addon.xml pins the versions.
+requests>=2.27.1
+six>=1.15.0
+
+# Errors-only gate, configured in .flake8
+flake8>=5.0
