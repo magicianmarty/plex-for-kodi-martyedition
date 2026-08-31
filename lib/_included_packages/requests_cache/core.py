@@ -7,7 +7,7 @@
     Core functions for configuring cache and monkey patching ``requests``
 """
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from operator import itemgetter
 
 import requests
@@ -114,7 +114,7 @@ class CachedSession(OriginalSession):
             return send_request_and_cache_response()
 
         if self._cache_expire_after is not None:
-            is_expired = datetime.utcnow() - timestamp > self._cache_expire_after
+            is_expired = datetime.now(timezone.utc).replace(tzinfo=None) - timestamp > self._cache_expire_after
             if is_expired:
                 if not self._return_old_data_on_error:
                     self.cache.delete(cache_key)
@@ -179,7 +179,7 @@ class CachedSession(OriginalSession):
         """
         if not self._cache_expire_after:
             return
-        self.cache.remove_old_entries(datetime.utcnow() - self._cache_expire_after)
+        self.cache.remove_old_entries(datetime.now(timezone.utc).replace(tzinfo=None) - self._cache_expire_after)
 
     def __repr__(self):
         return (
