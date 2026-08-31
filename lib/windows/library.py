@@ -987,6 +987,13 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                 options.append(dropdown.SEPARATOR)
             options.append({'key': 'to_section', 'display': T(32324, u'Go to {0}').format(self.section.getLibrarySectionTitle())})
 
+        # Reachable from the home screen's section context menu too, but this is
+        # where you are when you notice the file you just added is missing.
+        if self.canManageLibrary(self.section):
+            if options:
+                options.append(dropdown.SEPARATOR)
+            options.append({'key': 'scan_library', 'display': T(33082, 'Scan Library Files')})
+
         choice = dropdown.showDropdown(options, (255, 205))
         if not choice:
             return
@@ -995,6 +1002,8 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
             xbmc.executebuiltin('PlayerControl(Next)')
         elif choice['key'] == 'to_section':
             self.goHome(self.section.getLibrarySectionId())
+        elif choice['key'] == 'scan_library':
+            self.scanLibrary(self.section)
 
     def itemTypeButtonClicked(self):
         options = []
