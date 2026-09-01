@@ -3174,7 +3174,7 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
         else:
             options = []
 
-            if plexapp.ACCOUNT.isAdmin and section not in (watchlist_section, playlists_section):
+            if self.canManageLibrary(section) and section not in (watchlist_section, playlists_section):
                 options = [{'key': 'refresh', 'display': T(33082, "Scan Library Files")},
                            {'key': 'emptyTrash', 'display': T(33083, "Empty Trash")},
                            {'key': 'analyze', 'display': T(33084, "Analyze")},
@@ -3268,8 +3268,7 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
                 self.saveLibrarySettings()
                 return self.lastSection
         elif choice["key"] == "refresh":
-            with busy.BusyContext(delay=True, delay_time=0.2):
-                section.refresh()
+            self.scanLibrary(section)
             return self.lastSection
         elif choice["key"] == "emptyTrash":
             button = optionsdialog.show(
