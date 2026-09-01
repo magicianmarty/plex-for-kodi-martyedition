@@ -17,7 +17,7 @@ from plexnet import plexapp
 
 from lib import backgroundthread
 from lib import util
-from lib.downloads import discovery, model
+from lib.downloads import arr, discovery, model
 from lib.downloads.config import DownloadsConfig
 from lib.downloads.manager import DownloadsManager
 from lib.i18n import T
@@ -133,6 +133,112 @@ def announce(finished):
                 section.refresh()
             except Exception:
                 util.ERROR("downloads: scan after finish failed")
+
+
+def fetchOption(call, heading):
+    """A service call that must not take the UI down if it fails."""
+    got = []
+    with busy.BusyContext(delay=True, delay_time=0.2):
+        got.append(call())
+    if not got:
+        util.ERROR("downloads: could not read {0}".format(heading))
+        return None
+    return got[0]
+
+
+def chooseOption(options, heading, setting, index):
+    """
+    One of the service's options, asked once and then remembered - nobody wants
+    to answer "which quality profile" on every add. `index` picks which half of
+    the (id, label) pair the caller needs: a profile is added by id, a root
+    folder by path.
+    """
+    if not options:
+        return None
+    if len(options) == 1:
+        return options[0][index]
+
+    remembered = util.getSetting(setting, '')
+    for value, label in options:
+        if str(value) == remembered or label == remembered:
+            return (value, label)[index]
+
+    entries = [{'key': value, 'display': u'{0}'.format(label), 'label': label}
+               for value, label in options]
+    choice = dropdown.showDropdown(entries, (600, 300), header=heading, with_indicator=False)
+    if not choice:
+        return None
+    util.setSetting(setting, str(choice['key']))
+    return choice['key'] if index == 0 else choice['label']
+
+
+def addCandidate(client, candidate):
+    """Ask the two questions that matter, then add it and start the search."""
+    heading = T(35098, "Quality")
+    profile = chooseOption(fetchOption(client.profiles, heading), heading,
+                           'downloads_profile', 0)
+    if profile is None:
+        return False
+
+    heading = T(35099, "Where to put it")
+    root = chooseOption(fetchOption(client.rootFolders, heading), heading,
+                        'downloads_root', 1)
+    if root is None:
+        return False
+
+    if optionsdialog.show(T(35100, "Download {0}?").format(candidate.display),
+                          T(35101, "It will be added and searched for straight away."),
+                          T(32328, 'Yes'), T(32329, 'No')) != 0:
+        return False
+
+    added = []
+    with busy.BusyContext(delay=True, delay_time=0.2):
+        client.add(candidate, profile, root)
+        added.append(True)
+
+    if not added:
+        util.showNotification(T(35093, "That did not work"), header=T(35059, "Downloads"))
+        return False
+
+    util.showNotification(T(35102, "Looking for {0}").format(candidate.title),
+                          header=T(35059, "Downloads"))
+    return True
+
+
+def addForPlexItem(item):
+    """
+    Send something you are already looking at to the stack.
+
+    No keyboard and no fuzzy matching: a Plex item carries tmdb:// and tvdb://
+    ids alongside its own guid, and that is exactly what lookup takes.
+    """
+    services = manager().services()
+    if not services:
+        util.showNotification(T(35060, "No download services configured"),
+                              header=T(35059, "Downloads"))
+        return False
+
+    flavour = arr.flavourFor(item)
+    client = services.get(flavour)
+    if not client:
+        return False
+
+    term = arr.lookupTerm(item, flavour)
+    found = []
+    with busy.BusyContext(delay=True, delay_time=0.2):
+        found.extend(client.lookup(term))
+
+    if not found:
+        util.showNotification(T(35095, "Nothing found for {0}").format(term),
+                              header=T(35059, "Downloads"))
+        return False
+
+    candidate = found[0]
+    if candidate.added:
+        util.showNotification(T(35097, "{0} is already in your library").format(candidate.title),
+                              header=T(35059, "Downloads"))
+        return False
+    return addCandidate(client, candidate)
 
 
 def tick(force=False):
@@ -396,7 +502,10 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             util.showNotification(T(35097, "{0} is already in your library").format(candidate.title),
                                   header=T(35059, "Downloads"))
             return False
-        return self.addCandidate(services[candidate.source], candidate)
+        if addCandidate(services[candidate.source], candidate):
+            self.refresh(force=True)
+            return True
+        return False
 
     def findCandidates(self, services, term, service=None):
         """Ask the services that could plausibly own it, newest question first."""
@@ -412,74 +521,6 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             except Exception:
                 util.ERROR('downloads: lookup failed for {0}'.format(flavour))
         return found
-
-    def addCandidate(self, client, candidate):
-        """Ask the two questions that matter, then add it and start the search."""
-        heading = T(35098, "Quality")
-        profiles = self.fetch(client.profiles, heading)
-        profile = self.choose(profiles, heading, 'downloads_profile', 0)
-        if profile is None:
-            return False
-
-        heading = T(35099, "Where to put it")
-        roots = self.fetch(client.rootFolders, heading)
-        root = self.choose(roots, heading, 'downloads_root', 1)
-        if root is None:
-            return False
-
-        if optionsdialog.show(T(35100, "Download {0}?").format(candidate.display),
-                              T(35101, "It will be added and searched for straight away."),
-                              T(32328, 'Yes'), T(32329, 'No')) != 0:
-            return False
-
-        added = []
-        with busy.BusyContext(delay=True, delay_time=0.2):
-            client.add(candidate, profile, root)
-            added.append(True)
-
-        if not added:
-            util.showNotification(T(35093, "That did not work"), header=T(35059, "Downloads"))
-            return False
-
-        util.showNotification(T(35102, "Looking for {0}").format(candidate.title),
-                              header=T(35059, "Downloads"))
-        self.refresh(force=True)
-        return True
-
-    def choose(self, options, heading, setting, index):
-        """
-        One of the service's options, asked once and then remembered - nobody
-        wants to answer "which quality profile" on every add. `index` picks
-        which half of the (id, label) pair the caller actually needs: a profile
-        is added by id, a root folder by path.
-        """
-        if not options:
-            return None
-        if len(options) == 1:
-            return options[0][index]
-
-        remembered = util.getSetting(setting, '')
-        for value, label in options:
-            if str(value) == remembered or label == remembered:
-                return (value, label)[index]
-
-        entries = [{'key': value, 'display': u'{0}'.format(label), 'label': label}
-                   for value, label in options]
-        choice = dropdown.showDropdown(entries, (600, 300), header=heading, with_indicator=False)
-        if not choice:
-            return None
-        util.setSetting(setting, str(choice['key']))
-        return choice['key'] if index == 0 else choice['label']
-
-    def fetch(self, call, heading):
-        """A service call that must not take the UI down if it fails."""
-        got = []
-        with busy.BusyContext(delay=True, delay_time=0.2):
-            got.append(call())
-        if not got:
-            util.ERROR('downloads: could not read {0}'.format(heading))
-            return None
-        return got[0]
 
     def scanLibraries(self):
         """

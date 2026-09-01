@@ -33,6 +33,32 @@ IMPORTED_EVENT = "import"
 HISTORY_PAGE = 30
 
 
+# Sonarr matches on TVDB, Radarr on TMDB. A Plex item carries both, once you
+# look past its own guid: plex://movie/... says nothing to an *arr, but the
+# Guid children alongside it say tmdb://9387 and tvdb://1317.
+GUID_PREFIX = {SONARR: "tvdb", RADARR: "tmdb"}
+
+
+def lookupTerm(item, flavour):
+    """
+    What to ask an *arr about a Plex item.
+
+    An id when the item has one, which makes the match exact and needs no
+    keyboard; the title only as a last resort, where it is a guess.
+    """
+    wanted = GUID_PREFIX.get(flavour, "tmdb")
+    for guid in getattr(item, "guids", None) or []:
+        raw = str(getattr(guid, "id", "") or "")
+        if raw.startswith(wanted + "://"):
+            return "{0}:{1}".format(wanted, raw.split("://", 1)[1])
+    return str(getattr(item, "title", "") or "")
+
+
+def flavourFor(item):
+    """Films go to Radarr, everything else with episodes goes to Sonarr."""
+    return RADARR if str(getattr(item, "TYPE", "") or "") == "movie" else SONARR
+
+
 class ArrClient(object):
     def __init__(self, url, api_key=None, flavour=SONARR, timeout=6.0):
         self.flavour = flavour

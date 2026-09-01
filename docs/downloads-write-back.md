@@ -66,9 +66,13 @@ adds and searches. It is made of dialogs the add-on already had, which is what
 makes the watchlist route below cheap - it arrives at the same code with the
 term already known.
 
-**From the watchlist.** A "Download" action on a watchlist item:
+**From the watchlist** *(built)*. A "Download" action on a watchlist item.
+One correction to the plan above, found by looking: a watchlist row's own guid
+is `plex://movie/5d776832...`, which means nothing to an *arr. The ids it needs
+are the `Guid` children alongside it - `tmdb://9387`, `tvdb://1317` - which
+plexnet already parses into `item.guids`. So the flow is:
 
-1. Read the guid Plex already gave us (`tmdb://`, `tvdb://`).
+1. Read the tmdb/tvdb id off `item.guids`, not the item's own guid.
 2. `lookup` by that guid, so the match is exact rather than fuzzy.
 3. If it is already in the *arr, say so and offer a search instead of adding twice.
 4. Otherwise add it with the remembered profile and root folder, monitored, and

@@ -12,7 +12,7 @@ from __future__ import absolute_import
 import json
 import os
 
-from lib.downloads import model
+from lib.downloads import arr, model
 from lib.downloads.arr import ArrClient, RADARR, SONARR
 from lib.downloads.config import DownloadsConfig
 from lib.downloads.manager import DownloadsManager, Snapshot
@@ -628,3 +628,43 @@ class _StubConfig(object):
 
     def clients(self):
         return self._clients
+
+
+class PlexItemTest(KodiTestCase):
+    """
+    Sending something you are already looking at to the stack. This is the
+    route that needs no keyboard, so what matters is that the id it sends is
+    the exact one rather than a title to be guessed at.
+    """
+
+    class Guid(object):
+        def __init__(self, ident):
+            self.id = ident
+
+    class Item(object):
+        def __init__(self, type_, title, guids=()):
+            self.TYPE = type_
+            self.title = title
+            self.guids = [PlexItemTest.Guid(g) for g in guids]
+
+    def test_a_film_goes_to_radarr_by_its_tmdb_id(self):
+        item = self.Item("movie", "Conan the Barbarian",
+                         ["imdb://tt0082198", "tmdb://9387", "tvdb://1317"])
+        self.assertEqual(RADARR, arr.flavourFor(item))
+        self.assertEqual("tmdb:9387", arr.lookupTerm(item, RADARR))
+
+    def test_a_show_goes_to_sonarr_by_its_tvdb_id(self):
+        item = self.Item("show", "Andor", ["tmdb://83867", "tvdb://368159"])
+        self.assertEqual(SONARR, arr.flavourFor(item))
+        self.assertEqual("tvdb:368159", arr.lookupTerm(item, SONARR))
+
+    def test_plex_own_guid_is_no_use_and_is_not_offered(self):
+        """
+        A watchlist row's guid is plex://movie/5d776832..., which means nothing
+        to an *arr - the ids it needs are the Guid children alongside it.
+        """
+        item = self.Item("movie", "Conan the Barbarian", ["plex://movie/5d7768"])
+        self.assertEqual("Conan the Barbarian", arr.lookupTerm(item, RADARR))
+
+    def test_without_ids_it_falls_back_to_the_title(self):
+        self.assertEqual("Sisu", arr.lookupTerm(self.Item("movie", "Sisu"), RADARR))
