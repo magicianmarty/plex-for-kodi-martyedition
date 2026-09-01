@@ -256,11 +256,16 @@ class ShowSectionTest(KodiTestCase):
         metadata = ("<MediaContainer><Video ratingKey='900'><Media><Part>"
                     "<Stream streamType='1' DOVIProfile='8'/></Part></Media></Video>"
                     "</MediaContainer>")
+        # hdr and resolution answer about the series; dovi, atmos and
+        # audioLayout only about the episodes - so the fakes mirror that.
         self.server = FakeServer({
             "dovi=1": self.episodes(("900", "7"), ("901", "7")),
-            "hdr=1": self.episodes(("900", "7")),
+            "hdr=1": listing("7"),
             "atmos=1": self.episodes(("910", "8")),
-            "resolution=4k": self.episodes(("920", "9")),
+            "resolution=4k": listing("9"),
+            "resolution=1080": listing("8"),
+            "audioLayout=7%2E1": self.episodes(("930", "9")),
+            "audioLayout=5%2E1": self.episodes(("940", "8")),
             "/library/metadata/": metadata,
         })
         section = FakeSection(self.server)
@@ -268,14 +273,39 @@ class ShowSectionTest(KodiTestCase):
         self.sectionBadges = badges.SectionBadges(section)
         self.sectionBadges.load()
 
-    def test_the_episodes_are_asked_about_not_the_series(self):
-        paths = [p for p, _ in self.server.queries if "type=4" in p]
-        self.assertEqual(4, len(paths))
+    def test_each_filter_is_asked_at_the_level_that_answers_it(self):
+        """
+        Found by asking a real server: resolution=1080 returns 64 shows, but
+        audioLayout=7.1 returns nothing at series level and 39 episodes at
+        episode level.
+        """
+        episode_level = [p for p, _ in self.server.queries if "type=4" in p]
+        series_level = [p for p, _ in self.server.queries if "type=4" not in p
+                        and "/library/metadata/" not in p]
+
+        self.assertTrue(all("dovi" in p or "atmos" in p or "audioLayout" in p
+                            for p in episode_level), episode_level)
+        self.assertTrue(all("hdr" in p or "resolution" in p for p in series_level),
+                        series_level)
 
     def test_a_series_inherits_what_its_episodes_have(self):
         self.assertEqual({badges.DV, badges.HDR}, self.sectionBadges.of(FakeItem("7")))
-        self.assertEqual({badges.ATMOS}, self.sectionBadges.of(FakeItem("8")))
-        self.assertEqual({badges.UHD}, self.sectionBadges.of(FakeItem("9")))
+        self.assertEqual({badges.ATMOS, badges.HD, badges.CHANNELS},
+                         self.sectionBadges.of(FakeItem("8")))
+        self.assertEqual({badges.UHD, badges.CHANNELS}, self.sectionBadges.of(FakeItem("9")))
+
+    def test_a_series_gets_a_channel_layout_too(self):
+        """A TV shelf where only the rare shows badge looks broken next to films."""
+        self.assertEqual("7.1", self.sectionBadges.label(badges.CHANNELS, FakeItem("9")))
+        self.assertEqual("5.1", self.sectionBadges.label(badges.CHANNELS, FakeItem("8")))
+
+    def test_the_best_layout_a_series_has_is_the_one_shown(self):
+        self.assertNotEqual("5.1", self.sectionBadges.label(badges.CHANNELS, FakeItem("9")))
+
+    def test_a_series_is_one_resolution_tier_not_several(self):
+        found = self.sectionBadges.of(FakeItem("9"))
+        self.assertIn(badges.UHD, found)
+        self.assertNotIn(badges.HD, found)
 
     def test_a_series_with_nothing_special_gets_nothing(self):
         self.assertEqual(set(), self.sectionBadges.of(FakeItem("99")))

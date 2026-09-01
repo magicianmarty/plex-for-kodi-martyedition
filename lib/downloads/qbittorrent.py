@@ -30,6 +30,9 @@ class QbClient(object):
         self.password = password
         self.http = Session(url, timeout=timeout)
         self._authenticated = not (username and password)
+        # Finished torrents still sitting there seeding. Not worth a row each,
+        # but worth saying, or a client with nothing downloading looks broken.
+        self.seeding = 0
 
     @property
     def url(self):
@@ -57,7 +60,7 @@ class QbClient(object):
         self._authenticated = True
         return True
 
-    def torrents(self, filter="downloading"):
+    def torrents(self, filter="all"):
         try:
             data = self._torrents(filter)
         except ServiceError as e:
@@ -66,7 +69,21 @@ class QbClient(object):
                 raise
             self.login()
             data = self._torrents(filter)
-        return [self._download(record) for record in data or []]
+
+        # Everything, then decide here: what the stack still owes you, plus
+        # anything that has gone wrong. A library's worth of finished torrents
+        # seeding away is not a to-do list - but a torrent whose files have
+        # vanished is exactly the thing you want to be told about.
+        rows, seeding = [], 0
+        for record in data or []:
+            state = str(record.get("state") or "").lower()
+            done = (record.get("progress") or 0) >= 1
+            if done and state not in ("error", "missingfiles"):
+                seeding += 1
+                continue
+            rows.append(self._download(record))
+        self.seeding = seeding
+        return rows
 
     def _torrents(self, filter):
         if not self._authenticated:

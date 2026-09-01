@@ -19,7 +19,7 @@ from lib.downloads.manager import DownloadsManager, Snapshot
 from lib.downloads.net import ServiceError
 from lib.downloads.qbittorrent import QBITTORRENT, QbClient
 
-from .base import KodiTestCase
+from .base import KodiTestCase, import_window_module
 from . import FIXTURES_ROOT
 
 
@@ -774,3 +774,76 @@ class TorrentControlTest(KodiTestCase):
         self.client.http = Renamed({"/api/v2/auth/login": "Ok."})
         self.client.pause(self.item)
         self.assertIn(("post", "/api/v2/torrents/stop"), self.paths())
+
+
+class SearchAsYouTypeTest(KodiTestCase):
+    """
+    The autocomplete dialog's decisions, which are the parts that are not
+    layout: when it asks, what it asks, and what it does with a stale answer.
+    """
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        self.arrsearch = import_window_module("lib.windows.arrsearch")
+        self.client = sonarr({"/api/v3/series/lookup": [
+            {"title": "Severance", "year": 2022, "tvdbId": 371980},
+            {"title": "Severance", "year": 2006, "tvdbId": 1, "id": 4},
+        ]})
+        self.dialog = self.arrsearch.ArrSearchDialog.__new__(self.arrsearch.ArrSearchDialog)
+        self.dialog.services = {SONARR: self.client}
+        self.dialog.candidates = []
+        self.dialog.lastQuery = None
+        self.dialog.searchUntil = 0
+        self.dialog.searchThread = None
+        self.drawn = []
+        self.dialog.draw = lambda status: self.drawn.append(status)
+        self.dialog.setProperty = lambda *a: None
+        self.dialog.edit = type("E", (), {"getText": lambda _s: self.typed})()
+        self.typed = ""
+
+    def test_one_letter_is_not_worth_a_request(self):
+        self.typed = "s"
+        self.dialog._search()
+        self.assertEqual([], self.client.http.requests)
+
+    def test_a_real_query_asks_every_service(self):
+        self.typed = "severance"
+        self.dialog._search()
+        self.assertEqual(1, len(self.client.http.requests))
+        self.assertEqual("severance", self.client.http.requests[0][2]["term"])
+        self.assertEqual(2, len(self.dialog.candidates))
+
+    def test_typing_the_same_thing_again_asks_nothing(self):
+        self.typed = "severance"
+        self.dialog._search()
+        self.dialog._search()
+        self.assertEqual(1, len(self.client.http.requests))
+
+    def test_an_answer_for_an_abandoned_query_is_dropped(self):
+        """
+        You keep typing while the service is thinking; what comes back is
+        about what you used to be searching for, and putting it on screen
+        would be worse than showing nothing.
+        """
+        typing = {"value": "severance"}
+        self.dialog.edit = type("E", (), {"getText": lambda _s: typing["value"]})()
+
+        original = self.client.lookup
+
+        def lookupThenType(term):
+            found = original(term)
+            typing["value"] = "severance s01"   # the user carried on
+            return found
+
+        self.client.lookup = lookupThenType
+        self.dialog._search()
+
+        self.assertEqual([], self.dialog.candidates)
+        self.assertEqual([], self.drawn)
+
+    def test_a_service_that_fails_does_not_take_the_dialog_with_it(self):
+        self.dialog.services = {SONARR: sonarr(raises=ServiceError("unreachable"))}
+        self.typed = "severance"
+        self.dialog._search()
+        self.assertEqual([], self.dialog.candidates)
+        self.assertTrue(self.drawn)

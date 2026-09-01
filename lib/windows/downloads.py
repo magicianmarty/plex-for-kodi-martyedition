@@ -22,6 +22,7 @@ from lib.downloads.config import DownloadsConfig
 from lib.downloads.manager import DownloadsManager
 from lib.i18n import T
 
+from . import arrsearch
 from . import busy
 from . import dropdown
 from . import kodigui
@@ -559,11 +560,20 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
                                   header=T(35059, "Downloads"))
             return False
 
-        if term is None:
-            term = xbmcgui.Dialog().input(T(35094, "Search for something to download"),
-                                          type=xbmcgui.INPUT_ALPHANUM)
-            if not term:
+        if term is None and candidates is None:
+            # Search as you type rather than a keyboard that hands back a
+            # string you cannot check until after you commit to it.
+            chosen = arrsearch.search(services)
+            if not chosen:
                 return False
+            if chosen.added:
+                util.showNotification(T(35097, "{0} is already in your library").format(chosen.title),
+                                      header=T(35059, "Downloads"))
+                return False
+            if addCandidate(services[chosen.source], chosen):
+                self.refresh(force=True)
+                return True
+            return False
 
         if candidates is None:
             candidates = self.findCandidates(services, term, service)
@@ -643,7 +653,7 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             self.setProperty('status', T(35061, "Not answering: {0}").format(
                 ", ".join(sorted(snapshot.errors))))
         elif snapshot.updated:
-            self.setProperty('status', self.summaryLine(snapshot) if count
+            self.setProperty('status', self.summaryLine(snapshot) if count or snapshot.seeding
                              else T(35063, "Nothing downloading"))
         if not items and not snapshot.errors and snapshot.updated:
             self.drawEmpty(T(35063, "Nothing downloading"))
@@ -677,6 +687,8 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         _count, percent = snapshot.summary()
         if percent:
             parts.append("{0}%".format(percent))
+        if snapshot.seeding:
+            parts.append(T(35113, "{0} seeding").format(snapshot.seeding))
         return "  -  ".join(parts)
 
     def drawEmpty(self, message):

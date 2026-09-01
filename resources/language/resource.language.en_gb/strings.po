@@ -3608,3 +3608,19 @@ msgstr ""
 msgctxt "#35112"
 msgid "Grabbing {0}"
 msgstr ""
+
+msgctxt "#35113"
+msgid "{0} seeding"
+msgstr ""
+
+msgctxt "#35114"
+msgid "Type to search"
+msgstr ""
+
+msgctxt "#35115"
+msgid "Searching..."
+msgstr ""
+
+msgctxt "#35116"
+msgid "{0} found"
+msgstr ""

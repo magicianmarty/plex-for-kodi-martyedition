@@ -54,7 +54,27 @@ MAX_SHOWN = 3
 # and mapped back to the series through grandparentRatingKey. Checked live:
 # a TV section answers dovi=1 with 0 shows but type=4&dovi=1 with 65 episodes.
 MOVIE_FILTERS = {DV: "dovi=1", HDR: "hdr=1"}
-SHOW_FILTERS = {DV: "dovi=1", HDR: "hdr=1", ATMOS: "atmos=1", UHD: "resolution=4k"}
+
+# A show section answers some of these about the series and only knows others
+# about the episodes, which was found by asking: resolution=1080 returns 64
+# shows, but audioLayout=7.1 returns nothing at series level and 39 episodes at
+# episode level. So each filter is asked at the level that actually answers.
+SHOW_FILTERS = {
+    HDR: ["hdr=1"],
+    UHD: ["resolution=4k"],
+    HD: ["resolution=1080", "resolution=720"],
+    SD: ["resolution=sd", "resolution=480", "resolution=576"],
+}
+SHOW_EPISODE_FILTERS = {
+    DV: ["dovi=1"],
+    ATMOS: ["atmos=1"],
+}
+# Channel layouts, best first: a show is 7.1 if any episode is.
+SHOW_CHANNEL_FILTERS = (
+    ("7.1", ["audioLayout=7%2E1"]),
+    ("5.1", ["audioLayout=5%2E1", "audioLayout=5%2E1%28side%29"]),
+    ("2.0", ["audioLayout=stereo"]),
+)
 
 # A section's worth of keys, capped: past this the request costs more than the
 # badges are worth, and a library that size is not curated anyway.
@@ -157,13 +177,18 @@ class SectionBadges(object):
         self.profiles = {}
         # For shows: one Dolby Vision episode per series, to read the profile off.
         self.samples = {}
+        # For shows: the channel layout, which a series does not carry either.
+        self.channels = {}
         self.loaded = False
 
     def load(self):
         if self.loaded or not self.section:
             return self.loaded
-        for badge, query in (SHOW_FILTERS if self.isShow else MOVIE_FILTERS).items():
-            self.keys[badge] = self._keys(query, sample=badge == DV)
+        if self.isShow:
+            self._loadShow()
+        else:
+            for badge, query in MOVIE_FILTERS.items():
+                self.keys[badge] = self._keys(query)
         self._loadProfiles()
         self.loaded = True
         return True
@@ -197,7 +222,32 @@ class SectionBadges(object):
                         self.profiles[lookup.get(str(key), str(key))] = str(profile)
                         break
 
-    def _keys(self, query, sample=False):
+    def _loadShow(self):
+        """
+        A series carries none of this itself, so everything is asked of the
+        level that can answer and folded back onto the series.
+        """
+        for badge, queries in SHOW_FILTERS.items():
+            found = set()
+            for query in queries:
+                found |= self._keys(query, episodes=False)
+            self.keys[badge] = found
+
+        for badge, queries in SHOW_EPISODE_FILTERS.items():
+            found = set()
+            for query in queries:
+                found |= self._keys(query, episodes=True, sample=badge == DV)
+            self.keys[badge] = found
+
+        # Best layout wins, so a show with one 7.1 episode is a 7.1 show.
+        for label_, queries in reversed(SHOW_CHANNEL_FILTERS):
+            for query in queries:
+                for key in self._keys(query, episodes=True):
+                    self.channels[key] = label_
+        if self.channels:
+            self.keys[CHANNELS] = set(self.channels)
+
+    def _keys(self, query, episodes=None, sample=False):
         """
         The items in this section matching one filter.
 
@@ -205,7 +255,9 @@ class SectionBadges(object):
         about their series - a series is 4K because its episodes are.
         """
         path = "/library/sections/{0}/all?{1}".format(self.section.key, query)
-        if self.isShow:
+        if episodes is None:
+            episodes = self.isShow
+        if episodes:
             path += "&type=4"
         data = self.section.server.query(path, limit=MAX_KEYS)
         if data is None:
@@ -214,13 +266,13 @@ class SectionBadges(object):
         found = set()
         for element in data:
             attrs = element.attrib
-            key = attrs.get("grandparentRatingKey") if self.isShow else attrs.get("ratingKey")
+            key = attrs.get("grandparentRatingKey") if episodes else attrs.get("ratingKey")
             if not key:
                 continue
             key = str(key)
             found.add(key)
             # Keep one episode per series to read the Dolby Vision profile from.
-            if sample and self.isShow and key not in self.samples and attrs.get("ratingKey"):
+            if sample and episodes and key not in self.samples and attrs.get("ratingKey"):
                 self.samples[key] = str(attrs["ratingKey"])
         return found
 
@@ -230,8 +282,10 @@ class SectionBadges(object):
         titles match the Dolby Vision filter without the server naming a
         profile, and those stay a plain DV rather than claiming one.
         """
-        profile = self.profiles.get(str(getattr(item, "ratingKey", "") or ""))
-        return label(badge, item, profile)
+        key = str(getattr(item, "ratingKey", "") or "")
+        if badge == CHANNELS and key in self.channels:
+            return self.channels[key]
+        return label(badge, item, self.profiles.get(key))
 
     def of(self, item):
         """Every badge for one item, listing-derived and server-derived."""
@@ -241,4 +295,8 @@ class SectionBadges(object):
             for badge, keys in self.keys.items():
                 if key in keys:
                     found.add(badge)
+        # A series with a 4K episode and an SD one is a 4K series, not both.
+        for better, worse in ((UHD, HD), (UHD, SD), (HD, SD)):
+            if better in found:
+                found.discard(worse)
         return found

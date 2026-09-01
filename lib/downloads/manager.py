@@ -20,8 +20,11 @@ from .qbittorrent import QbClient
 
 
 class Snapshot(object):
-    def __init__(self, items=None, errors=None, updated=0.0):
+    def __init__(self, items=None, errors=None, updated=0.0, seeding=0):
         self.items = items or []
+        # Finished torrents still seeding: not rows, but proof the client is
+        # there and doing something.
+        self.seeding = seeding
         # {service name: reason}, for the line under the list
         self.errors = errors or {}
         self.updated = updated
@@ -74,11 +77,13 @@ class DownloadsManager(object):
         items = []
         errors = {}
         finished = []
+        seeding = 0
         for client in self.clients():
             name = getattr(client, "flavour", None) or "qbittorrent"
             try:
                 items.extend(self._poll(client))
                 finished.extend(self._imported(client, name))
+                seeding += getattr(client, "seeding", 0) or 0
             except ServiceError as e:
                 errors[name] = describe(e)
             except Exception as e:  # a service answering nonsense is not fatal
@@ -93,7 +98,7 @@ class DownloadsManager(object):
             if errors:
                 kept = [item for item in previous.items if item.source in errors]
                 items = sorted(items + kept, key=lambda item: item.sortKey)
-            self.snapshot = Snapshot(items, errors, time.time())
+            self.snapshot = Snapshot(items, errors, time.time(), seeding=seeding)
             self._finished = finished
         return self.snapshot
 
