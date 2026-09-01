@@ -207,7 +207,10 @@ class ArrClient(object):
         if movie.get("title"):
             year = movie.get("year")
             return movie["title"], str(year) if year else release
-        return release or "Unknown", ""
+        if release:
+            title, detail = model.prettifyRelease(release)
+            return title or release, detail
+        return "Unknown", ""
 
     @staticmethod
     def _quality(record):

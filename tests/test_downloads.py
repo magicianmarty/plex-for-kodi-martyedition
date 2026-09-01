@@ -99,6 +99,42 @@ class FormattingTest(KodiTestCase):
         self.assertIsNone(model.parseTimeleft("soon"))
 
 
+class ReleaseNameTest(KodiTestCase):
+    """
+    What a row looks like when the service knows nothing about the item - a
+    grab whose series was removed. It is the least readable row on the screen,
+    so it gets the most help.
+    """
+
+    def test_a_scene_name_becomes_a_title_and_a_spec(self):
+        title, detail = model.prettifyRelease(
+            "House.Of.The.Dragon.S02.2160p.UHD.BluRay.REMUX.DV.HDR10.TrueHD.7.1")
+        self.assertEqual("House Of The Dragon", title)
+        self.assertTrue(detail.startswith("S02 2160p"))
+
+    def test_a_film_splits_on_its_year(self):
+        title, detail = model.prettifyRelease("Conan.the.Barbarian.1982.2160p.UHD.BluRay")
+        self.assertEqual("Conan the Barbarian", title)
+        self.assertTrue(detail.startswith("1982"))
+
+    def test_something_unparseable_is_left_readable(self):
+        title, detail = model.prettifyRelease("some_odd_release")
+        self.assertEqual("some odd release", title)
+        self.assertEqual("", detail)
+
+    def test_a_name_that_is_all_spec_keeps_its_name(self):
+        title, _detail = model.prettifyRelease("2160p.BluRay")
+        self.assertEqual("2160p BluRay", title)
+
+    def test_the_queue_uses_it_when_the_service_knows_nothing(self):
+        client = sonarr({"/api/v3/queue": {"records": [
+            {"id": 1, "size": 100, "sizeleft": 50, "status": "downloading",
+             "title": "House.Of.The.Dragon.S02.2160p.UHD.BluRay.REMUX"}]}})
+        item = client.queue()[0]
+        self.assertEqual("House Of The Dragon", item.title)
+        self.assertIn("2160p", item.subtitle)
+
+
 class SonarrQueueTest(KodiTestCase):
     def setUp(self):
         KodiTestCase.setUp(self)
@@ -159,7 +195,9 @@ class SonarrQueueTest(KodiTestCase):
         self.assertEqual("1d 2h", item.etaDisplay())
 
     def test_a_failing_grab_carries_its_reason(self):
-        item = self.byTitle("Unknown.Release.1080p")
+        # No series known, so the row is named from the release: "Unknown
+        # Release" rather than "Unknown.Release.1080p".
+        item = self.byTitle("Unknown Release")
         self.assertEqual(model.FAILED, item.state)
         self.assertIn("eligible for import", item.message)
 
