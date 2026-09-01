@@ -36,7 +36,7 @@ order they are worth building:
 3. **Search by name**, last, for the cases neither covers - with the on-screen
    keyboard, which a phone can drive over JSON-RPC anyway.
 
-## Phase 1 - clearing out
+## Phase 1 - clearing out  *(built)*
 
 A context menu on a Downloads tile:
 
@@ -57,7 +57,14 @@ Rules that matter more than the menu:
 Cost: no new window, no skin work. `arr.py` grows three methods, the context
 menu grows three entries.
 
-## Phase 2 - adding
+## Phase 2 - adding  *(search built; watchlist next)*
+
+**Search and add** is built: the Add button on the Downloads screen takes a
+term, asks both services, shows what they found (marking what is already in
+your library), asks for quality and destination once and remembers them, then
+adds and searches. It is made of dialogs the add-on already had, which is what
+makes the watchlist route below cheap - it arrives at the same code with the
+term already known.
 
 **From the watchlist.** A "Download" action on a watchlist item:
 

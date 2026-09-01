@@ -12,6 +12,15 @@ PROWLARR = "prowlarr"
 
 SECTION_TYPES = {SONARR: "show", RADARR: "movie"}
 
+# The two services are the same API with different nouns; every difference
+# between them lives here rather than leaking into the windows.
+NOUNS = {
+    SONARR: {"item": "series", "id": "seriesId", "guid": "tvdbId",
+             "search": "SeriesSearch", "search_ids": "seriesId"},
+    RADARR: {"item": "movie", "id": "movieId", "guid": "tmdbId",
+             "search": "MoviesSearch", "search_ids": "movieIds"},
+}
+
 # trackedDownloadState wins over status: a record can say "completed" while the
 # import that actually puts it in your library has not happened yet, and that
 # gap is exactly the bit worth showing.
@@ -144,6 +153,95 @@ class ArrClient(object):
             ))
         return finished
 
+    # ---------------------------------------------------------------- writes
+
+    def remove(self, download, from_client=False, blocklist=False):
+        """
+        Drop a grab from the queue.
+
+        from_client is off by default on purpose: a finished download that only
+        needs unpacking should not evaporate because a menu was ambiguous.
+        skipRedownload rides along with blocklist=False so removing something
+        does not immediately fetch it again.
+        """
+        if not getattr(download, "service_id", None):
+            raise ServiceError("nothing to remove")
+        params = {
+            "removeFromClient": "true" if from_client else "false",
+            "blocklist": "true" if blocklist else "false",
+            "skipRedownload": "false" if blocklist else "true",
+        }
+        self.http.request("/api/v3/queue/{0}".format(download.service_id),
+                          method="delete", expect_json=False, params=params)
+        return True
+
+    def searchAgain(self, download):
+        """Ask the service to go looking again for whatever this row is about."""
+        parent = getattr(download, "parent_id", None)
+        if not parent:
+            raise ServiceError("nothing to search for")
+        nouns = NOUNS[self.flavour]
+        body = {"name": nouns["search"]}
+        if nouns["search_ids"].endswith("s"):
+            body[nouns["search_ids"]] = [parent]
+        else:
+            body[nouns["search_ids"]] = parent
+        self.http.request("/api/v3/command", method="post", json=body)
+        return True
+
+    # ------------------------------------------------------------ adding new
+
+    def lookup(self, term):
+        """
+        Find something to add. `term` is a title, or "tvdb:1234" / "tmdb:1234",
+        which is what makes adding from a Plex watchlist exact rather than a
+        fuzzy title match.
+        """
+        nouns = NOUNS[self.flavour]
+        data = self.http.request("/api/v3/{0}/lookup".format(nouns["item"]),
+                                 params={"term": term})
+        found = []
+        for record in data or []:
+            found.append(model.Candidate(
+                title=record.get("title") or "",
+                year=record.get("year"),
+                ident=record.get(nouns["guid"]),
+                poster=self.poster({nouns["item"]: record}),
+                overview=record.get("overview") or "",
+                source=self.flavour,
+                # lookup only carries an id for things the service already has
+                added=bool(record.get("id")),
+            ))
+        return found
+
+    def profiles(self):
+        return [(p.get("id"), p.get("name") or "")
+                for p in self.http.request("/api/v3/qualityprofile") or []]
+
+    def rootFolders(self):
+        return [(f.get("id"), f.get("path") or "")
+                for f in self.http.request("/api/v3/rootfolder") or []]
+
+    def add(self, candidate, profile_id, root_folder, monitor=True, search=True):
+        """Add it, and start looking for it."""
+        nouns = NOUNS[self.flavour]
+        body = {
+            "title": candidate.title,
+            nouns["guid"]: candidate.ident,
+            "qualityProfileId": profile_id,
+            "rootFolderPath": root_folder,
+            "monitored": monitor,
+        }
+        if self.flavour == SONARR:
+            body["seasonFolder"] = True
+            body["addOptions"] = {"monitor": "all" if monitor else "none",
+                                  "searchForMissingEpisodes": bool(search)}
+        else:
+            body["minimumAvailability"] = "released"
+            body["addOptions"] = {"searchForMovie": bool(search)}
+        return self.http.request("/api/v3/{0}".format(nouns["item"]),
+                                 method="post", json=body, ok=(200, 201))
+
     def poster(self, record):
         """The artwork the *arr already knows about, so rows are not text-only."""
         for owner in (record.get("series") or {}, record.get("movie") or {}):
@@ -169,8 +267,11 @@ class ArrClient(object):
         title, subtitle = self._titles(record)
         state, message = self._state(record)
 
+        nouns = NOUNS[self.flavour]
         return model.Download(
             poster=self.poster(record),
+            service_id=record.get("id"),
+            parent_id=record.get(nouns["id"]),
             key="{0}:{1}".format(self.flavour, record.get("id") or record.get("downloadId") or title),
             title=title,
             subtitle=subtitle,

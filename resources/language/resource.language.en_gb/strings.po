@@ -3504,3 +3504,71 @@ msgstr ""
 msgctxt "#35086"
 msgid "Dolby Vision (with its profile), Atmos, DTS:X, HDR, resolution and channel layout, shown on the artwork. Dolby Vision and HDR cost one request per library when it is opened; everything else is already in the listing."
 msgstr ""
+
+msgctxt "#35087"
+msgid "Remove from queue"
+msgstr ""
+
+msgctxt "#35088"
+msgid "Remove and never take that release"
+msgstr ""
+
+msgctxt "#35089"
+msgid "Search again"
+msgstr ""
+
+msgctxt "#35090"
+msgid "Searching again for {0}"
+msgstr ""
+
+msgctxt "#35091"
+msgid "{0}\n\nThe downloaded files are left alone."
+msgstr ""
+
+msgctxt "#35092"
+msgid "Removed {0}"
+msgstr ""
+
+msgctxt "#35093"
+msgid "That did not work"
+msgstr ""
+
+msgctxt "#35094"
+msgid "Search for something to download"
+msgstr ""
+
+msgctxt "#35095"
+msgid "Nothing found for {0}"
+msgstr ""
+
+msgctxt "#35096"
+msgid "already added"
+msgstr ""
+
+msgctxt "#35097"
+msgid "{0} is already in your library"
+msgstr ""
+
+msgctxt "#35098"
+msgid "Quality"
+msgstr ""
+
+msgctxt "#35099"
+msgid "Where to put it"
+msgstr ""
+
+msgctxt "#35100"
+msgid "Download {0}?"
+msgstr ""
+
+msgctxt "#35101"
+msgid "It will be added and searched for straight away."
+msgstr ""
+
+msgctxt "#35102"
+msgid "Looking for {0}"
+msgstr ""
+
+msgctxt "#35103"
+msgid "Add"
+msgstr ""

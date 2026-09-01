@@ -22,7 +22,10 @@ from lib.downloads.config import DownloadsConfig
 from lib.downloads.manager import DownloadsManager
 from lib.i18n import T
 
+from . import busy
+from . import dropdown
 from . import kodigui
+from . import optionsdialog
 from . import windowutils
 
 STATE_COLOURS = {
@@ -185,6 +188,7 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
     REFRESH_BUTTON_ID = 203
     PLAYER_STATUS_BUTTON_ID = 204
     SCAN_BUTTON_ID = 205
+    ADD_BUTTON_ID = 206
 
     def __init__(self, *args, **kwargs):
         kodigui.ControlledWindow.__init__(self, *args, **kwargs)
@@ -215,11 +219,72 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
 
     def onAction(self, action):
         try:
+            if action == xbmcgui.ACTION_CONTEXT_MENU and self.getFocusId() == self.LIST_ID:
+                self.itemMenu()
+                return
             if time.time() - self.lastRefresh > REFRESH_SECONDS:
                 self.refresh()
         except Exception:
             util.ERROR()
         kodigui.ControlledWindow.onAction(self, action)
+
+    def selected(self):
+        mli = self.listControl.getSelectedItem()
+        return mli.dataSource if mli else None
+
+    def itemMenu(self):
+        """
+        What you can do to the row you are looking at. Everything here writes
+        to the service, so everything here is confirmed first.
+        """
+        item = self.selected()
+        if not item:
+            return
+        client = self.manager.clientFor(item)
+        if not client:
+            return
+
+        options = [
+            {'key': 'remove', 'display': T(35087, "Remove from queue")},
+            {'key': 'blocklist', 'display': T(35088, "Remove and never take that release")},
+        ]
+        if getattr(item, 'parent_id', None):
+            options.append({'key': 'search', 'display': T(35089, "Search again")})
+
+        choice = dropdown.showDropdown(options, (600, 400), with_indicator=False)
+        if not choice:
+            return
+        if choice['key'] == 'search':
+            self.runWrite(client.searchAgain, item, T(35090, "Searching again for {0}"))
+            return
+
+        blocklist = choice['key'] == 'blocklist'
+        heading = (T(35088, "Remove and never take that release") if blocklist
+                   else T(35087, "Remove from queue"))
+        # Say what happens to the files, because the answer is "nothing" and
+        # people reasonably assume otherwise.
+        if optionsdialog.show(heading, T(35091, "{0}\n\nThe downloaded files are left alone.").format(item.title),
+                              T(32328, 'Yes'), T(32329, 'No')) != 0:
+            return
+
+        self.runWrite(lambda i: client.remove(i, blocklist=blocklist), item,
+                      T(35092, "Removed {0}"))
+
+    def runWrite(self, call, item, message):
+        """Every write reports what happened: a silent failure looks like a bug."""
+        ok = []
+        with busy.BusyContext(delay=True, delay_time=0.2):
+            call(item)
+            ok.append(True)
+
+        if not ok:
+            util.showNotification(T(35093, "That did not work"), header=T(35059, "Downloads"))
+            return False
+
+        util.showNotification(message.format(item.title), header=T(35059, "Downloads"))
+        self.draw(self.manager.forget(item))
+        self.refresh(force=True)
+        return True
 
     def onClick(self, controlID):
         if controlID == self.HOME_BUTTON_ID:
@@ -228,6 +293,8 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             self.refresh(force=True)
         elif controlID == self.SCAN_BUTTON_ID:
             self.scanLibraries()
+        elif controlID == self.ADD_BUTTON_ID:
+            self.addSomething()
         elif controlID == self.PLAYER_STATUS_BUTTON_ID:
             self.showAudioPlayer()
 
@@ -285,6 +352,134 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         else:
             # Found them, but they still want a key we do not have.
             self.drawEmpty(T(35074, "Found: {0}").format(", ".join(sorted(found))))
+
+    def addSomething(self, term=None, candidates=None, service=None):
+        """
+        Find something and put it in the stack.
+
+        Built out of the dialogs the add-on already has rather than a new
+        window: a keyboard, a dropdown of results, a dropdown of profiles. It
+        is also why adding from the Plex watchlist can reuse all of this - it
+        just arrives with the term already known.
+        """
+        services = self.manager.services()
+        if not services:
+            util.showNotification(T(35060, "No download services configured"),
+                                  header=T(35059, "Downloads"))
+            return False
+
+        if term is None:
+            term = xbmcgui.Dialog().input(T(35094, "Search for something to download"),
+                                          type=xbmcgui.INPUT_ALPHANUM)
+            if not term:
+                return False
+
+        if candidates is None:
+            candidates = self.findCandidates(services, term, service)
+        if not candidates:
+            util.showNotification(T(35095, "Nothing found for {0}").format(term),
+                                  header=T(35059, "Downloads"))
+            return False
+
+        options = []
+        for index, candidate in enumerate(candidates[:20]):
+            label = candidate.display
+            if candidate.added:
+                label = u"{0}  -  {1}".format(label, T(35096, "already added"))
+            options.append({'key': index, 'display': label})
+        choice = dropdown.showDropdown(options, (600, 300), with_indicator=False)
+        if not choice:
+            return False
+
+        candidate = candidates[choice['key']]
+        if candidate.added:
+            util.showNotification(T(35097, "{0} is already in your library").format(candidate.title),
+                                  header=T(35059, "Downloads"))
+            return False
+        return self.addCandidate(services[candidate.source], candidate)
+
+    def findCandidates(self, services, term, service=None):
+        """Ask the services that could plausibly own it, newest question first."""
+        wanted = [service] if service else list(services)
+        found = []
+        for flavour in wanted:
+            client = services.get(flavour)
+            if not client:
+                continue
+            try:
+                with busy.BusyContext(delay=True, delay_time=0.2):
+                    found.extend(client.lookup(term))
+            except Exception:
+                util.ERROR('downloads: lookup failed for {0}'.format(flavour))
+        return found
+
+    def addCandidate(self, client, candidate):
+        """Ask the two questions that matter, then add it and start the search."""
+        heading = T(35098, "Quality")
+        profiles = self.fetch(client.profiles, heading)
+        profile = self.choose(profiles, heading, 'downloads_profile', 0)
+        if profile is None:
+            return False
+
+        heading = T(35099, "Where to put it")
+        roots = self.fetch(client.rootFolders, heading)
+        root = self.choose(roots, heading, 'downloads_root', 1)
+        if root is None:
+            return False
+
+        if optionsdialog.show(T(35100, "Download {0}?").format(candidate.display),
+                              T(35101, "It will be added and searched for straight away."),
+                              T(32328, 'Yes'), T(32329, 'No')) != 0:
+            return False
+
+        added = []
+        with busy.BusyContext(delay=True, delay_time=0.2):
+            client.add(candidate, profile, root)
+            added.append(True)
+
+        if not added:
+            util.showNotification(T(35093, "That did not work"), header=T(35059, "Downloads"))
+            return False
+
+        util.showNotification(T(35102, "Looking for {0}").format(candidate.title),
+                              header=T(35059, "Downloads"))
+        self.refresh(force=True)
+        return True
+
+    def choose(self, options, heading, setting, index):
+        """
+        One of the service's options, asked once and then remembered - nobody
+        wants to answer "which quality profile" on every add. `index` picks
+        which half of the (id, label) pair the caller actually needs: a profile
+        is added by id, a root folder by path.
+        """
+        if not options:
+            return None
+        if len(options) == 1:
+            return options[0][index]
+
+        remembered = util.getSetting(setting, '')
+        for value, label in options:
+            if str(value) == remembered or label == remembered:
+                return (value, label)[index]
+
+        entries = [{'key': value, 'display': u'{0}'.format(label), 'label': label}
+                   for value, label in options]
+        choice = dropdown.showDropdown(entries, (600, 300), header=heading, with_indicator=False)
+        if not choice:
+            return None
+        util.setSetting(setting, str(choice['key']))
+        return choice['key'] if index == 0 else choice['label']
+
+    def fetch(self, call, heading):
+        """A service call that must not take the UI down if it fails."""
+        got = []
+        with busy.BusyContext(delay=True, delay_time=0.2):
+            got.append(call())
+        if not got:
+            util.ERROR('downloads: could not read {0}'.format(heading))
+            return None
+        return got[0]
 
     def scanLibraries(self):
         """

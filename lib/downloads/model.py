@@ -104,7 +104,7 @@ class Download(object):
 
     def __init__(self, key, title, source, state=QUEUED, progress=0.0, size=0,
                  eta=None, message="", subtitle="", section_type=None, poster="",
-                 at=None):
+                 at=None, service_id=None, parent_id=None):
         self.key = key
         self.title = title
         self.subtitle = subtitle
@@ -122,6 +122,10 @@ class Download(object):
         self.count = 1
         # ISO timestamp for history entries; None for anything still in flight.
         self.at = at
+        # The service's own ids: the queue record, and the series or movie it
+        # belongs to. Without them a row can be looked at but not acted on.
+        self.service_id = service_id
+        self.parent_id = parent_id
 
     @property
     def percent(self):
@@ -150,3 +154,25 @@ class Download(object):
 
     def __ne__(self, other):
         return not self.__eq__(other)
+
+
+class Candidate(object):
+    """Something the *arr could add: a lookup result, not a download yet."""
+
+    def __init__(self, title, year=None, ident=None, poster="", overview="",
+                 source="", added=False):
+        self.title = title
+        self.year = year
+        self.ident = ident
+        self.poster = poster
+        self.overview = overview
+        self.source = source
+        # Already in the service's library - offering to add it again is a lie.
+        self.added = added
+
+    @property
+    def display(self):
+        return u"{0} ({1})".format(self.title, self.year) if self.year else self.title
+
+    def __repr__(self):
+        return "<Candidate {0} {1}>".format(self.source, repr(self.display))

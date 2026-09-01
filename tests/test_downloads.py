@@ -38,14 +38,19 @@ class FakeHttp(object):
         self.base_url = base_url
 
     def request(self, path, method="get", expect_json=True, ok=(200,), **kwargs):
-        self.requests.append((method, path, kwargs.get("params") or {}))
+        self.requests.append((method, path, kwargs.get("json", kwargs.get("params") or {})))
         if self.raises:
             raise self.raises
-        for prefix, answer in self.answers.items():
+        # Longest prefix wins, so /api/v3/series/lookup is not answered by the
+        # entry for /api/v3/series.
+        for prefix in sorted(self.answers, key=len, reverse=True):
             if path.startswith(prefix):
+                answer = self.answers[prefix]
                 if isinstance(answer, Exception):
                     raise answer
                 return answer
+        if method != "get":
+            return {}          # a write the service accepted and said nothing about
         raise ServiceError("HTTP 404", status=404)
 
 
@@ -322,6 +327,153 @@ class QbittorrentTest(KodiTestCase):
     def test_nothing_listening_is_not_qbittorrent(self):
         client = qbittorrent(raises=ServiceError("unreachable"))
         self.assertFalse(client.identify())
+
+
+class WriteBackTest(KodiTestCase):
+    """
+    Everything here changes somebody's library, so the exact request matters
+    more than usual - and the defaults matter most of all.
+    """
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        self.client = sonarr()
+        self.item = model.Download("k", "Andor", SONARR, service_id=42, parent_id=7)
+
+    def sent(self):
+        return self.client.http.requests[0]
+
+    def test_removing_leaves_the_files_alone(self):
+        """
+        A finished download that only needs unpacking must not evaporate
+        because a menu was ambiguous - so removeFromClient is off unless asked.
+        """
+        self.client.remove(self.item)
+
+        method, path, params = self.sent()
+        self.assertEqual(("delete", "/api/v3/queue/42"), (method, path))
+        self.assertEqual("false", params["removeFromClient"])
+        self.assertEqual("false", params["blocklist"])
+
+    def test_removing_without_blocklisting_does_not_re_grab_it(self):
+        """Otherwise the *arr fetches the same broken release straight back."""
+        self.client.remove(self.item)
+        self.assertEqual("true", self.sent()[2]["skipRedownload"])
+
+    def test_blocklisting_asks_for_a_different_release(self):
+        self.client.remove(self.item, blocklist=True)
+        params = self.sent()[2]
+        self.assertEqual("true", params["blocklist"])
+        self.assertEqual("false", params["skipRedownload"])
+
+    def test_a_row_with_no_service_id_cannot_be_removed(self):
+        with self.assertRaises(ServiceError):
+            self.client.remove(model.Download("k", "T", SONARR))
+
+    def test_searching_again_uses_each_services_own_command(self):
+        self.client.searchAgain(self.item)
+        self.assertEqual(("post", "/api/v3/command", {"name": "SeriesSearch", "seriesId": 7}),
+                         self.sent())
+
+        movies = radarr()
+        movies.searchAgain(model.Download("k", "T", RADARR, service_id=1, parent_id=9))
+        self.assertEqual(("post", "/api/v3/command", {"name": "MoviesSearch", "movieIds": [9]}),
+                         movies.http.requests[0])
+
+    def test_nothing_to_search_for_is_refused_rather_than_guessed(self):
+        with self.assertRaises(ServiceError):
+            self.client.searchAgain(model.Download("k", "T", SONARR, service_id=42))
+
+
+class AddNewTest(KodiTestCase):
+    LOOKUP = [
+        {"title": "Severance", "year": 2022, "tvdbId": 371980,
+         "overview": "Work-life balance", "id": 0,
+         "images": [{"coverType": "poster", "remoteUrl": "http://art/sev.jpg"}]},
+        {"title": "Andor", "year": 2022, "tvdbId": 368159, "id": 7},
+    ]
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        self.client = sonarr({"/api/v3/series/lookup": self.LOOKUP,
+                              "/api/v3/qualityprofile": [{"id": 4, "name": "HD-1080p"},
+                                                         {"id": 5, "name": "Ultra-HD"}],
+                              "/api/v3/rootfolder": [{"id": 2, "path": "/media/media/tv"}],
+                              "/api/v3/series": {"id": 99}})
+
+    def test_a_lookup_reads_like_something_you_can_choose_from(self):
+        found = self.client.lookup("severance")
+        self.assertEqual("Severance (2022)", found[0].display)
+        self.assertEqual(371980, found[0].ident)
+        self.assertEqual("http://art/sev.jpg", found[0].poster)
+
+    def test_things_already_in_the_library_say_so(self):
+        """lookup only carries an id for what the service already has."""
+        found = self.client.lookup("andor")
+        self.assertFalse(found[0].added)
+        self.assertTrue(found[1].added)
+
+    def test_a_guid_can_be_looked_up_directly(self):
+        """
+        What makes adding from a Plex watchlist exact: the watchlist entry
+        already carries the id, so nothing has to be matched on a title.
+        """
+        self.client.lookup("tvdb:371980")
+        self.assertEqual("tvdb:371980", self.client.http.requests[0][2]["term"])
+
+    def test_adding_a_series_asks_for_it_to_be_searched(self):
+        candidate = self.client.lookup("severance")[0]
+        self.client.add(candidate, 4, "/media/media/tv")
+
+        method, path, body = self.client.http.requests[-1]
+        self.assertEqual(("post", "/api/v3/series"), (method, path))
+        self.assertEqual(371980, body["tvdbId"])
+        self.assertEqual(4, body["qualityProfileId"])
+        self.assertEqual("/media/media/tv", body["rootFolderPath"])
+        self.assertTrue(body["monitored"])
+        self.assertTrue(body["addOptions"]["searchForMissingEpisodes"])
+
+    def test_adding_a_movie_speaks_radarr(self):
+        movies = radarr({"/api/v3/movie/lookup": [{"title": "Sisu", "year": 2022, "tmdbId": 987}],
+                         "/api/v3/movie": {"id": 5}})
+        candidate = movies.lookup("sisu")[0]
+        movies.add(candidate, 5, "/media/media/movies")
+
+        method, path, body = movies.http.requests[-1]
+        self.assertEqual(("post", "/api/v3/movie"), (method, path))
+        self.assertEqual(987, body["tmdbId"])
+        self.assertTrue(body["addOptions"]["searchForMovie"])
+        self.assertNotIn("seasonFolder", body)
+
+    def test_the_options_an_add_needs(self):
+        self.assertEqual([(4, "HD-1080p"), (5, "Ultra-HD")], self.client.profiles())
+        self.assertEqual([(2, "/media/media/tv")], self.client.rootFolders())
+
+
+class ManagerRoutingTest(KodiTestCase):
+    def test_a_row_knows_which_service_to_act_on(self):
+        tv, films = sonarr(), radarr()
+        mgr = DownloadsManager(config=_StubConfig([tv, films]))
+
+        self.assertIs(tv, mgr.clientFor(model.Download("k", "T", SONARR)))
+        self.assertIs(films, mgr.clientFor(model.Download("k", "T", RADARR)))
+        self.assertIsNone(mgr.clientFor(model.Download("k", "T", "qbittorrent")))
+
+    def test_only_the_arrs_can_be_added_to(self):
+        mgr = DownloadsManager(config=_StubConfig([sonarr(), radarr(), qbittorrent()]))
+        self.assertEqual({SONARR, RADARR}, set(mgr.services()))
+
+    def test_a_removed_row_leaves_the_screen_at_once(self):
+        """Waiting a poll for it to disappear reads as "the button did nothing"."""
+        client = sonarr({"/api/v3/queue": fixture("sonarr_queue.json")})
+        mgr = DownloadsManager(config=_StubConfig([client]))
+        snapshot = mgr.refresh()
+        gone = snapshot.items[0]
+
+        after = mgr.forget(gone)
+
+        self.assertNotIn(gone.key, [i.key for i in after.items])
+        self.assertEqual(len(snapshot.items) - 1, len(after.items))
 
 
 class ConfigTest(KodiTestCase):

@@ -13,7 +13,7 @@ import threading
 import time
 
 from . import model
-from .arr import ArrClient
+from .arr import ArrClient, RADARR, SONARR
 from .config import DownloadsConfig
 from .net import ServiceError, describe
 from .qbittorrent import QbClient
@@ -137,6 +137,29 @@ class DownloadsManager(object):
         with self.lock:
             finished, self._finished = self._finished, []
             return finished
+
+    def clientFor(self, item):
+        """The service a row came from, so it can be acted on."""
+        for client in self.clients():
+            if getattr(client, "flavour", None) == getattr(item, "source", None):
+                return client
+        return None
+
+    def services(self):
+        """{flavour: client} for the *arrs, which are the ones you can add to."""
+        found = {}
+        for client in self.clients():
+            flavour = getattr(client, "flavour", None)
+            if flavour in (SONARR, RADARR):
+                found[flavour] = client
+        return found
+
+    def forget(self, item):
+        """Drop a row from the snapshot now, rather than waiting for a poll."""
+        with self.lock:
+            items = [i for i in self.snapshot.items if i.key != item.key]
+            self.snapshot = Snapshot(items, self.snapshot.errors, self.snapshot.updated)
+        return self.snapshot
 
     def item(self, key):
         with self.lock:

@@ -54,7 +54,7 @@ class Session(object):
         if headers:
             self.session.headers.update(headers)
 
-    def request(self, path, method="get", expect_json=True, ok=(200,), **kwargs):
+    def request(self, path, method="get", expect_json=True, ok=(200, 201, 202), **kwargs):
         url = "{0}{1}".format(self.base_url, path)
         kwargs.setdefault("timeout", self.timeout)
         try:

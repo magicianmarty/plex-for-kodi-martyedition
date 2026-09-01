@@ -29,9 +29,9 @@
     </control>
 
     <control type="grouplist" id="210">
-        <posx>1380</posx>
+        <posx>1210</posx>
         <posy>{{ vscale(4) }}</posy>
-        <width>470</width>
+        <width>640</width>
         <height>{{ vscale(48) }}</height>
         <align>right</align>
         <itemgap>12</itemgap>
@@ -40,6 +40,18 @@
         <ondown>101</ondown>
         <onleft>101</onleft>
         <onright>101</onright>
+        <control type="button" id="206">
+            <width max="200">auto</width>
+            <height>{{ vscale(48) }}</height>
+            <font>font12</font>
+            <textcolor>FFEDEDED</textcolor>
+            <focusedcolor>FF000000</focusedcolor>
+            <align>center</align><aligny>center</aligny>
+            <textoffsetx>22</textoffsetx>
+            <texturefocus colordiffuse="FFE5A00D" border="10">script.plex/white-square-rounded.png</texturefocus>
+            <texturenofocus colordiffuse="30FFFFFF" border="10">script.plex/white-square-rounded.png</texturenofocus>
+            <label>$ADDON[script.plexmod 35103]</label>
+        </control>
         <control type="button" id="205">
             <width max="300">auto</width>
             <height>{{ vscale(48) }}</height>
