@@ -197,7 +197,20 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         self.setProperty('heading', T(35059, "Downloads"))
         self.draw(self.manager.snapshot)
         self.refresh(force=True)
-        self.setFocusId(self.LIST_ID)
+        self.focusBest()
+
+    def focusBest(self):
+        """
+        Focus something that exists.
+
+        The list is hidden while it is empty, and a window whose focus lands on
+        a hidden control backs straight out again - which is exactly what
+        happened on the first open, before any poll had filled the cache.
+        """
+        if self.listControl.size():
+            self.setFocusId(self.LIST_ID)
+        else:
+            self.setFocusId(self.SCAN_BUTTON_ID)
 
     def onAction(self, action):
         try:
@@ -239,7 +252,12 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         self.task = None
         self.setBoolProperty('refreshing', False)
         announce(self.manager.finished())
+        had = self.listControl.size()
         self.draw(snapshot)
+        # First rows to arrive: move focus onto them, since it is parked on the
+        # action row while there is nothing to look at.
+        if not had and self.listControl.size():
+            self.focusBest()
 
     def discover(self):
         """

@@ -301,6 +301,34 @@ class DownloadsPresentationTest(MixinTestCase):
         self.assertIn("30%", line)
 
 
+class WindowFocusTest(MixinTestCase):
+    def setUp(self):
+        MixinTestCase.setUp(self)
+        self.downloads = import_window_module("lib.windows.downloads")
+
+    def window(self, item_count):
+        window = self.downloads.DownloadsWindow.__new__(self.downloads.DownloadsWindow)
+        window.focused = []
+        window.setFocusId = window.focused.append
+        window.listControl = type("L", (), {"size": lambda _self: item_count})()
+        return window
+
+    def test_an_empty_screen_focuses_something_that_exists(self):
+        """
+        The list control is hidden while empty, and focus landing on a hidden
+        control backs the window straight out - which is what happened on the
+        very first open, before any poll had filled the cache.
+        """
+        window = self.window(0)
+        window.focusBest()
+        self.assertEqual([self.downloads.DownloadsWindow.SCAN_BUTTON_ID], window.focused)
+
+    def test_with_rows_the_list_takes_focus(self):
+        window = self.window(3)
+        window.focusBest()
+        self.assertEqual([self.downloads.DownloadsWindow.LIST_ID], window.focused)
+
+
 class NotificationRulesTest(MixinTestCase):
     def setUp(self):
         MixinTestCase.setUp(self)

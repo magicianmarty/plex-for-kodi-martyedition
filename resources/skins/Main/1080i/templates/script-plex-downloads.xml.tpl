@@ -1,5 +1,5 @@
 {% extends "default.xml.tpl" %}
-{% block headers %}<defaultcontrol>101</defaultcontrol>{% endblock %}
+{% block headers %}<defaultcontrol>210</defaultcontrol>{% endblock %}
 {% block topleft_add %}
 <control type="label">
     <width max="500">auto</width>
