@@ -3486,5 +3486,9 @@ msgid "Refresh the library as soon as the server changes it"
 msgstr ""
 
 msgctxt "#35082"
-msgid "Announce new items as they arrive"
+msgid "Say when a download finishes"
+msgstr ""
+
+msgctxt "#35083"
+msgid "Scan libraries"
 msgstr ""

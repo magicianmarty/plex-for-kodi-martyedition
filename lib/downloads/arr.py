@@ -17,6 +17,12 @@ SECTION_TYPES = {SONARR: "show", RADARR: "movie"}
 # gap is exactly the bit worth showing.
 IMPORT_STATES = ("importpending", "importing", "importblocked", "importfailed")
 
+# History is the only place the *arrs say a file actually landed in the library.
+# Matched loosely on the event name rather than the numeric id, because Sonarr
+# and Radarr do not number their event types identically.
+IMPORTED_EVENT = "import"
+HISTORY_PAGE = 30
+
 
 class ArrClient(object):
     def __init__(self, url, api_key=None, flavour=SONARR, timeout=6.0):
@@ -54,6 +60,51 @@ class ArrClient(object):
         data = self.http.request("/api/v3/queue", params=params)
         return [self._download(record) for record in self._records(data)]
 
+    def history(self, since=None):
+        """
+        What this service has actually imported, newest first.
+
+        The queue tells you what is in flight; only history tells you something
+        finished - an entry leaving the queue could equally have been removed,
+        blocked or failed, and announcing those as "finished downloading" is
+        how you end up not trusting the notifications.
+        """
+        params = {"page": 1, "pageSize": HISTORY_PAGE, "sortKey": "date",
+                  "sortDirection": "descending"}
+        if self.flavour == SONARR:
+            params["includeSeries"] = "true"
+        else:
+            params["includeMovie"] = "true"
+
+        data = self.http.request("/api/v3/history", params=params)
+        finished = []
+        for record in self._records(data):
+            if IMPORTED_EVENT not in str(record.get("eventType") or "").lower():
+                continue
+            at = record.get("date")
+            if since and at and at <= since:
+                continue
+            title, subtitle = self._titles(record)
+            finished.append(model.Download(
+                key="{0}:history:{1}".format(self.flavour, record.get("id")),
+                title=title,
+                subtitle=subtitle,
+                source=self.flavour,
+                state=model.DONE,
+                progress=1.0,
+                section_type=SECTION_TYPES.get(self.flavour),
+                at=at,
+            ))
+        return finished
+
+    def poster(self, record):
+        """The artwork the *arr already knows about, so rows are not text-only."""
+        for owner in (record.get("series") or {}, record.get("movie") or {}):
+            for image in owner.get("images") or []:
+                if image.get("coverType") == "poster":
+                    return image.get("remoteUrl") or image.get("url") or ""
+        return ""
+
     @staticmethod
     def _records(data):
         # v3 answered with a bare list, v4 paginates. Both are still out there.
@@ -72,6 +123,7 @@ class ArrClient(object):
         state, message = self._state(record)
 
         return model.Download(
+            poster=self.poster(record),
             key="{0}:{1}".format(self.flavour, record.get("id") or record.get("downloadId") or title),
             title=title,
             subtitle=subtitle,

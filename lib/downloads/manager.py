@@ -13,7 +13,7 @@ import threading
 import time
 
 from . import model
-from .arr import ArrClient, SONARR
+from .arr import ArrClient
 from .config import DownloadsConfig
 from .net import ServiceError, describe
 from .qbittorrent import QbClient
@@ -52,9 +52,11 @@ class DownloadsManager(object):
         self.snapshot = Snapshot()
         self.lock = threading.RLock()
         self._clients = None
-        self._lastKeys = set()
-        self._known = {}
-        self._finished = {}
+        # Newest import we have already seen, per service. Set on the first
+        # poll from what history already holds, so starting the add-on never
+        # announces a backlog of things that landed days ago.
+        self._historySeen = {}
+        self._finished = []
 
     def clients(self):
         if self._clients is None:
@@ -71,10 +73,12 @@ class DownloadsManager(object):
         """
         items = []
         errors = {}
+        finished = []
         for client in self.clients():
             name = getattr(client, "flavour", None) or "qbittorrent"
             try:
                 items.extend(self._poll(client))
+                finished.extend(self._imported(client, name))
             except ServiceError as e:
                 errors[name] = describe(e)
             except Exception as e:  # a service answering nonsense is not fatal
@@ -90,7 +94,28 @@ class DownloadsManager(object):
                 kept = [item for item in previous.items if item.source in errors]
                 items = sorted(items + kept, key=lambda item: item.sortKey)
             self.snapshot = Snapshot(items, errors, time.time())
+            self._finished = finished
         return self.snapshot
+
+    def _imported(self, client, name):
+        """
+        What this service imported since we last looked.
+
+        The first poll only records where history stands; it announces nothing,
+        because everything in it finished before the add-on was even started.
+        """
+        if not isinstance(client, ArrClient):
+            return []
+
+        # "Never looked" and "looked, saw nothing" are different: only the
+        # first is a reason to stay quiet, and an empty history on the first
+        # poll must not leave us permanently unbaselined.
+        first = name not in self._historySeen
+        since = self._historySeen.get(name)
+        records = client.history(since=since)
+        dates = [r.at for r in records if r.at]
+        self._historySeen[name] = (max(dates) if dates else None) or since
+        return [] if first else records
 
     @staticmethod
     def _poll(client):
@@ -102,25 +127,16 @@ class DownloadsManager(object):
 
     def finished(self):
         """
-        Keys that were active last time and are gone now - i.e. things that
-        landed. Consumed, so each is reported once.
+        What genuinely landed since the last poll, straight from the services'
+        own import history. Consumed, so each is reported once.
+
+        Deliberately not "it left the queue": a queue entry also disappears
+        when it is removed, blocked or fails, and calling those "finished
+        downloading" is how notifications stop being believed.
         """
         with self.lock:
-            current = dict((item.key, item) for item in self.snapshot.items)
-            previous = self._lastKeys
-            self._lastKeys = set(current)
-            self._known.update(current)
-            if not previous:
-                return []
-            gone = [key for key in previous if key not in current]
-            # Keep the last known record so the notification can name it.
-            self._finished = dict((key, self._known.get(key)) for key in gone)
-            self._known = current
-            return gone
-
-    def finishedItems(self, key):
-        """The last thing we knew about a key that has since gone."""
-        return self._finished.get(key)
+            finished, self._finished = self._finished, []
+            return finished
 
     def item(self, key):
         with self.lock:

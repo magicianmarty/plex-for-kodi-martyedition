@@ -258,6 +258,78 @@ class LibraryOptionsMenuTest(MixinTestCase):
         self.assertEqual(0, section.refreshed)
 
 
+class DownloadsPresentationTest(MixinTestCase):
+    """The bits of the Downloads screen that are decisions, not layout."""
+
+    def setUp(self):
+        MixinTestCase.setUp(self)
+        self.downloads = import_window_module("lib.windows.downloads")
+        from lib.downloads import model
+        self.model = model
+
+    def item(self, state, percent=50, eta=600, size=1024 ** 3):
+        return self.model.Download("k", "T", "sonarr", state, percent / 100.0,
+                                   size=size, eta=eta)
+
+    def test_a_moving_item_leads_with_how_far_and_how_long(self):
+        line = self.downloads.DownloadsWindow.detailLine(self.item(self.model.DOWNLOADING))
+        self.assertTrue(line.startswith("50%"))
+        self.assertIn("10m", line)
+
+    def test_a_paused_item_does_not_claim_an_eta(self):
+        """"0s left" under something that is not moving is worse than silence."""
+        line = self.downloads.DownloadsWindow.detailLine(self.item(self.model.PAUSED))
+        self.assertNotIn("10m", line)
+        self.assertNotIn("%", line)
+
+    def test_each_state_is_told_apart_by_colour(self):
+        colours = {self.downloads.STATE_COLOURS.get(s, self.downloads.DEFAULT_STATE_COLOUR)
+                   for s in (self.model.DOWNLOADING, self.model.IMPORTING,
+                             self.model.FAILED, self.model.QUEUED)}
+        self.assertEqual(4, len(colours))
+
+    def test_the_summary_counts_what_is_happening(self):
+        from lib.downloads.manager import Snapshot
+        snapshot = Snapshot([
+            self.model.Download("a", "A", "sonarr", self.model.DOWNLOADING, 0.5),
+            self.model.Download("b", "B", "sonarr", self.model.DOWNLOADING, 0.1),
+            self.model.Download("c", "C", "radarr", self.model.IMPORTING, 1.0),
+        ])
+        line = self.downloads.DownloadsWindow.summaryLine(snapshot)
+        self.assertIn("2 downloading", line)
+        self.assertIn("1 importing", line)
+        self.assertIn("30%", line)
+
+
+class NotificationRulesTest(MixinTestCase):
+    def setUp(self):
+        MixinTestCase.setUp(self)
+        self.downloads = import_window_module("lib.windows.downloads")
+        from lib.downloads import model
+        self.finished = [model.Download("k", "Conan the Barbarian", "radarr", model.DONE, 1.0)]
+
+    def test_a_finished_download_is_announced(self):
+        self.downloads.announce(self.finished)
+        self.assertTrue([n for n in self.notifications() if "Conan" in n])
+
+    def test_nothing_interrupts_a_film(self):
+        """A popup over playback is worse than finding out afterwards."""
+        from kodienv import ENV
+        ENV.cond_visibility["Player.HasVideo"] = True
+
+        self.downloads.announce(self.finished)
+
+        self.assertEqual([], self.notifications())
+
+    def test_the_setting_turns_it_off(self):
+        from kodienv import ENV
+        ENV.settings["downloads_notify"] = "false"
+
+        self.downloads.announce(self.finished)
+
+        self.assertEqual([], self.notifications())
+
+
 class BothWindowsShareItTest(KodiTestCase):
     def test_the_home_screen_and_the_library_screen_use_the_same_code(self):
         """

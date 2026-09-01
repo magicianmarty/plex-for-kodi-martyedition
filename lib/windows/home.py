@@ -4745,9 +4745,6 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
                 if hubs:
                     hubs.lastUpdated = time.time() - HUBS_REFRESH_INTERVAL - 1
             util.DEBUG_LOG("Home: library {0} updated, hubs marked stale", sectionID or "(all)")
-
-            if titles and util.getSetting('library_events_notify', True):
-                util.showNotification(", ".join(titles[:3]), header=T(35080, "New in your library"))
         except Exception:
             util.ERROR("Home: could not handle library update")
 

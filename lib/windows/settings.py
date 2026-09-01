@@ -1087,8 +1087,8 @@ class Settings(object):
                 StringSetting('downloads_qbt_pass', T(35072, 'qBittorrent password'), ''),
                 BoolSetting('library_events',
                             T(35081, 'Refresh the library as soon as the server changes it'), True),
-                BoolSetting('library_events_notify',
-                            T(35082, 'Announce new items as they arrive'), True),
+                BoolSetting('downloads_notify',
+                            T(35082, 'Say when a download finishes'), True),
                 BoolSetting('downloads_scan_on_finish',
                             T(35078, 'Scan the Plex library when a download finishes'), False),
             )

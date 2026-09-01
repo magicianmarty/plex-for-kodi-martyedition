@@ -49,14 +49,19 @@ class FakeHttp(object):
         raise ServiceError("HTTP 404", status=404)
 
 
-def sonarr(answers=None, raises=None):
+def sonarr(answers=None, raises=None, history=None):
     client = ArrClient("http://box:8989", "key", flavour=SONARR)
+    answers = dict(answers or {})
+    answers.setdefault("/api/v3/history", history if history is not None
+                       else {"records": []})
     client.http = FakeHttp(answers, raises)
     return client
 
 
 def radarr(answers=None):
     client = ArrClient("http://box:7878", "key", flavour=RADARR)
+    answers = dict(answers or {})
+    answers.setdefault("/api/v3/history", {"records": []})
     client.http = FakeHttp(answers)
     return client
 
@@ -342,23 +347,54 @@ class ManagerTest(KodiTestCase):
         self.assertEqual(1, len(snapshot.items))
         self.assertEqual([SONARR], list(snapshot.errors))
 
-    def test_what_disappeared_since_last_time_is_what_landed(self):
-        client = sonarr({"/api/v3/queue": fixture("sonarr_queue.json")})
+    def test_only_what_the_service_imported_counts_as_finished(self):
+        """
+        Not "it left the queue": an entry also disappears when it is removed,
+        blocked or fails, and announcing those as finished downloading is how
+        the notifications stop being believed.
+        """
+        client = sonarr({"/api/v3/queue": fixture("sonarr_queue.json")},
+                        history={"records": []})
         mgr = self.manager(client)
         mgr.refresh()
         mgr.finished()
 
-        data = fixture("sonarr_queue.json")
-        data["records"] = [r for r in data["records"] if r["id"] != 12]
-        client.http.answers["/api/v3/queue"] = data
+        client.http.answers["/api/v3/history"] = fixture("sonarr_history.json")
         mgr.refresh()
 
         finished = mgr.finished()
-        self.assertEqual(1, len(finished))
-        self.assertEqual("Severance", mgr.finishedItems(finished[0]).title)
+        self.assertEqual(["Band of Brothers", "Band of Brothers"],
+                         [f.title for f in finished])
+        self.assertEqual(["S01E06 - Bastogne", "S01E05 - Crossroads"],
+                         [f.subtitle for f in finished])
 
-    def test_the_first_poll_does_not_announce_everything_as_finished(self):
-        mgr = self.manager(sonarr({"/api/v3/queue": fixture("sonarr_queue.json")}))
+    def test_a_grab_or_a_failure_is_not_a_finish(self):
+        client = sonarr({"/api/v3/queue": {"records": []}}, history={"records": []})
+        mgr = self.manager(client)
+        mgr.refresh()
+        client.http.answers["/api/v3/history"] = fixture("sonarr_history.json")
+        mgr.refresh()
+
+        self.assertEqual(2, len(mgr.finished()))  # 4 records, 2 of them imports
+
+    def test_the_first_poll_announces_nothing(self):
+        """
+        Everything in history finished before the add-on started; announcing it
+        on launch would be a wall of notifications for last week.
+        """
+        mgr = self.manager(sonarr({"/api/v3/queue": fixture("sonarr_queue.json")},
+                                  history=fixture("sonarr_history.json")))
+        mgr.refresh()
+        self.assertEqual([], mgr.finished())
+
+    def test_the_same_import_is_not_announced_on_every_poll(self):
+        client = sonarr({"/api/v3/queue": {"records": []}}, history={"records": []})
+        mgr = self.manager(client)
+        mgr.refresh()
+        client.http.answers["/api/v3/history"] = fixture("sonarr_history.json")
+        mgr.refresh()
+        self.assertEqual(2, len(mgr.finished()))
+
         mgr.refresh()
         self.assertEqual([], mgr.finished())
 

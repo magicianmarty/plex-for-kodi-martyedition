@@ -78,7 +78,8 @@ class Download(object):
     """
 
     def __init__(self, key, title, source, state=QUEUED, progress=0.0, size=0,
-                 eta=None, message="", subtitle="", section_type=None):
+                 eta=None, message="", subtitle="", section_type=None, poster="",
+                 at=None):
         self.key = key
         self.title = title
         self.subtitle = subtitle
@@ -91,6 +92,9 @@ class Download(object):
         # 'show' or 'movie' where we know it, so a finished item can point at
         # the Plex library it belongs to.
         self.section_type = section_type
+        self.poster = poster
+        # ISO timestamp for history entries; None for anything still in flight.
+        self.at = at
 
     @property
     def percent(self):

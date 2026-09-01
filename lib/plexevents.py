@@ -46,11 +46,12 @@ LIBRARY_UPDATE = "LIBRARY_UPDATE"
 # TimelineEntry.state 5 is "done with this item".
 TIMELINE_FINAL = 5
 
-# How long an item stays "already announced". The server re-emits state 5 for
-# the same itemID every ~40 seconds while it is analysing, and emits each one
-# twice - once carrying mediaState, once without - so without this you get the
-# same notification over and over for something that arrived once.
-SEEN_TTL = 6 * 3600
+# How long the same itemID is treated as old news. The server re-emits state 5
+# for it every ~40 seconds while it is still working, and each emission arrives
+# twice - once carrying mediaState, once without. Nothing here notifies any
+# more (that comes from the download services\' own import history), so this
+# only has to stop pointless redraws, and a short window does that.
+SEEN_TTL = 300
 SEEN_MAX = 500
 
 # A scan emits its 'ended' per section, but metadata and analysis land after it,
