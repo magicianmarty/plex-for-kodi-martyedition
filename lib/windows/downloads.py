@@ -168,6 +168,7 @@ class AmbientTask(backgroundthread.Task):
         util.setGlobalProperty("downloads.count", count and str(count) or "")
         util.setGlobalProperty("downloads.percent", count and str(percent) or "")
         announce(finished)
+        plexapp.util.APP.trigger("downloads:updated", count=count)
 
 
 class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):

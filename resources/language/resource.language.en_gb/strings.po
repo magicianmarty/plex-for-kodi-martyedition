@@ -3492,3 +3492,7 @@ msgstr ""
 msgctxt "#35083"
 msgid "Scan libraries"
 msgstr ""
+
+msgctxt "#35084"
+msgid "Downloading"
+msgstr ""

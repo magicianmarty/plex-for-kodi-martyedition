@@ -358,6 +358,42 @@ class NotificationRulesTest(MixinTestCase):
         self.assertEqual([], self.notifications())
 
 
+class DownloadsHubTest(MixinTestCase):
+    """The row of tiles under the Downloads tile on the home screen."""
+
+    def setUp(self):
+        MixinTestCase.setUp(self)
+        self.home = import_window_module("lib.windows.home")
+        from lib.downloads import model
+        self.model = model
+
+    def tile(self, **kw):
+        defaults = dict(key="k", title="Masters of the Air", source="sonarr",
+                        state=self.model.DOWNLOADING, progress=0.42)
+        defaults.update(kw)
+        return self.model.Download(**defaults)
+
+    def test_a_download_can_stand_in_for_a_hub_item(self):
+        """
+        The hub row asks its items for Plex attributes as it draws and as focus
+        moves; PlexObject answers anything it does not have with an empty
+        value, and so must this, or a redraw raises on someone's TV.
+        """
+        stand_in = self.home.DownloadTile(self.tile())
+        self.assertEqual("Masters of the Air", stand_in.title)
+        self.assertEqual("", stand_in.thumb)
+        self.assertEqual("", stand_in.get("anything"))
+        self.assertFalse(stand_in.in_progress)
+
+    def test_a_tile_carries_what_it_needs_to_be_drawn(self):
+        window = self.home.HomeWindow.__new__(self.home.HomeWindow)
+        mli = window.createDownloadTile(self.tile(subtitle="Season 1", poster="http://art"))
+
+        self.assertEqual("Masters of the Air", mli.label)
+        self.assertEqual("42", mli.getProperty("progress"))
+        self.assertTrue(isinstance(mli.dataSource, self.home.DownloadTile))
+
+
 class BothWindowsShareItTest(KodiTestCase):
     def test_the_home_screen_and_the_library_screen_use_the_same_code(self):
         """
