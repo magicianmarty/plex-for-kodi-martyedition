@@ -750,6 +750,9 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                     options.append({'key': 'mark_unwatched', 'display': T(32318, "Mark Unplayed")})
             else:
                 options.append({'key': 'remove_from_watchlist', 'display': T(34011, "Remove from watchlist")})
+                # The whole point of a watchlist is things you do not have yet.
+                if downloads.configured():
+                    options.append({'key': 'download', 'display': T(35104, "Download")})
 
             title = mli.label
             secondary = mli.label2
@@ -769,6 +772,12 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                 header=T(33030, 'Choose action for: {}').format(label),
                 align_items="left",
             )
+
+            if choice and choice["key"] == "download":
+                # Its own confirmation lives in the add flow, which knows what
+                # it is about to start and where it will land.
+                downloads.addForPlexItem(ds)
+                return True
 
             if choice and choice["key"] in ("mark_watched", "mark_unwatched", "remove_from_watchlist"):
                 if util.getSetting('home_confirm_actions'):

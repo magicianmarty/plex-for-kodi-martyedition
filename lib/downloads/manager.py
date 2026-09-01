@@ -13,15 +13,18 @@ import threading
 import time
 
 from . import model
-from .arr import ArrClient
+from .arr import ArrClient, RADARR, SONARR
 from .config import DownloadsConfig
 from .net import ServiceError, describe
 from .qbittorrent import QbClient
 
 
 class Snapshot(object):
-    def __init__(self, items=None, errors=None, updated=0.0):
+    def __init__(self, items=None, errors=None, updated=0.0, seeding=0):
         self.items = items or []
+        # Finished torrents still seeding: not rows, but proof the client is
+        # there and doing something.
+        self.seeding = seeding
         # {service name: reason}, for the line under the list
         self.errors = errors or {}
         self.updated = updated
@@ -57,6 +60,9 @@ class DownloadsManager(object):
         # announces a backlog of things that landed days ago.
         self._historySeen = {}
         self._finished = []
+        # Finished torrents are noise most of the time and the whole point the
+        # rest of the time, so it is a switch rather than a rule.
+        self.includeSeeding = False
 
     def clients(self):
         if self._clients is None:
@@ -74,11 +80,13 @@ class DownloadsManager(object):
         items = []
         errors = {}
         finished = []
+        seeding = 0
         for client in self.clients():
             name = getattr(client, "flavour", None) or "qbittorrent"
             try:
                 items.extend(self._poll(client))
                 finished.extend(self._imported(client, name))
+                seeding += getattr(client, "seeding", 0) or 0
             except ServiceError as e:
                 errors[name] = describe(e)
             except Exception as e:  # a service answering nonsense is not fatal
@@ -93,7 +101,7 @@ class DownloadsManager(object):
             if errors:
                 kept = [item for item in previous.items if item.source in errors]
                 items = sorted(items + kept, key=lambda item: item.sortKey)
-            self.snapshot = Snapshot(items, errors, time.time())
+            self.snapshot = Snapshot(items, errors, time.time(), seeding=seeding)
             self._finished = finished
         return self.snapshot
 
@@ -117,12 +125,11 @@ class DownloadsManager(object):
         self._historySeen[name] = (max(dates) if dates else None) or since
         return [] if first else records
 
-    @staticmethod
-    def _poll(client):
+    def _poll(self, client):
         if isinstance(client, ArrClient):
             return client.queue()
         if isinstance(client, QbClient):
-            return client.torrents()
+            return client.torrents(include_finished=self.includeSeeding)
         return []
 
     def finished(self):
@@ -137,6 +144,29 @@ class DownloadsManager(object):
         with self.lock:
             finished, self._finished = self._finished, []
             return finished
+
+    def clientFor(self, item):
+        """The service a row came from, so it can be acted on."""
+        for client in self.clients():
+            if getattr(client, "flavour", None) == getattr(item, "source", None):
+                return client
+        return None
+
+    def services(self):
+        """{flavour: client} for the *arrs, which are the ones you can add to."""
+        found = {}
+        for client in self.clients():
+            flavour = getattr(client, "flavour", None)
+            if flavour in (SONARR, RADARR):
+                found[flavour] = client
+        return found
+
+    def forget(self, item):
+        """Drop a row from the snapshot now, rather than waiting for a poll."""
+        with self.lock:
+            items = [i for i in self.snapshot.items if i.key != item.key]
+            self.snapshot = Snapshot(items, self.snapshot.errors, self.snapshot.updated)
+        return self.snapshot
 
     def item(self, key):
         with self.lock:

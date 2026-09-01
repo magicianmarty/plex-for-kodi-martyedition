@@ -12,6 +12,15 @@ PROWLARR = "prowlarr"
 
 SECTION_TYPES = {SONARR: "show", RADARR: "movie"}
 
+# The two services are the same API with different nouns; every difference
+# between them lives here rather than leaking into the windows.
+NOUNS = {
+    SONARR: {"item": "series", "id": "seriesId", "guid": "tvdbId",
+             "search": "SeriesSearch", "search_ids": "seriesId"},
+    RADARR: {"item": "movie", "id": "movieId", "guid": "tmdbId",
+             "search": "MoviesSearch", "search_ids": "movieIds"},
+}
+
 # trackedDownloadState wins over status: a record can say "completed" while the
 # import that actually puts it in your library has not happened yet, and that
 # gap is exactly the bit worth showing.
@@ -22,6 +31,37 @@ IMPORT_STATES = ("importpending", "importing", "importblocked", "importfailed")
 # and Radarr do not number their event types identically.
 IMPORTED_EVENT = "import"
 HISTORY_PAGE = 30
+
+# An interactive search makes the *arr ask every indexer and wait for them, so
+# it takes tens of seconds where everything else here takes one. Measured
+# against a live Sonarr: 79 releases, well over the default timeout.
+SEARCH_TIMEOUT = 120.0
+
+
+# Sonarr matches on TVDB, Radarr on TMDB. A Plex item carries both, once you
+# look past its own guid: plex://movie/... says nothing to an *arr, but the
+# Guid children alongside it say tmdb://9387 and tvdb://1317.
+GUID_PREFIX = {SONARR: "tvdb", RADARR: "tmdb"}
+
+
+def lookupTerm(item, flavour):
+    """
+    What to ask an *arr about a Plex item.
+
+    An id when the item has one, which makes the match exact and needs no
+    keyboard; the title only as a last resort, where it is a guess.
+    """
+    wanted = GUID_PREFIX.get(flavour, "tmdb")
+    for guid in getattr(item, "guids", None) or []:
+        raw = str(getattr(guid, "id", "") or "")
+        if raw.startswith(wanted + "://"):
+            return "{0}:{1}".format(wanted, raw.split("://", 1)[1])
+    return str(getattr(item, "title", "") or "")
+
+
+def flavourFor(item):
+    """Films go to Radarr, everything else with episodes goes to Sonarr."""
+    return RADARR if str(getattr(item, "TYPE", "") or "") == "movie" else SONARR
 
 
 class ArrClient(object):
@@ -86,6 +126,7 @@ class ArrClient(object):
             row = self._download(members[0])
             if len(members) > 1:
                 row.count = len(members)
+                row.service_ids = [m.get("id") for m in members if m.get("id")]
                 row.subtitle = self._packSubtitle(members)
                 # The furthest from finished is the honest headline: a pack
                 # with two episodes still downloading is not "importing".
@@ -144,6 +185,146 @@ class ArrClient(object):
             ))
         return finished
 
+    # ---------------------------------------------------------------- writes
+
+    def remove(self, download, from_client=False, blocklist=False):
+        """
+        Drop a grab from the queue.
+
+        from_client is off by default on purpose: a finished download that only
+        needs unpacking should not evaporate because a menu was ambiguous.
+        skipRedownload rides along with blocklist=False so removing something
+        does not immediately fetch it again.
+        """
+        ids = getattr(download, "service_ids", None) or (
+            [download.service_id] if getattr(download, "service_id", None) else [])
+        if not ids:
+            raise ServiceError("nothing to remove")
+
+        params = {
+            "removeFromClient": "true" if from_client else "false",
+            "blocklist": "true" if blocklist else "false",
+            "skipRedownload": "false" if blocklist else "true",
+        }
+        # Every record behind the row, not just the first: one row can be a
+        # ten-episode pack, and removing one of ten looks like nothing happened.
+        for queue_id in ids:
+            self.http.request("/api/v3/queue/{0}".format(queue_id),
+                              method="delete", expect_json=False, params=params)
+        return True
+
+    def searchAgain(self, download):
+        """Ask the service to go looking again for whatever this row is about."""
+        parent = getattr(download, "parent_id", None)
+        if not parent:
+            raise ServiceError("nothing to search for")
+        nouns = NOUNS[self.flavour]
+        body = {"name": nouns["search"]}
+        if nouns["search_ids"].endswith("s"):
+            body[nouns["search_ids"]] = [parent]
+        else:
+            body[nouns["search_ids"]] = parent
+        self.http.request("/api/v3/command", method="post", json=body)
+        return True
+
+    # ------------------------------------------------- picking a release yourself
+
+    def releases(self, download, season=None):
+        """
+        What the indexers are actually offering for this thing.
+
+        Slow - the *arr goes and asks every indexer - so it is only ever run
+        from an explicit action, never from a poll.
+        """
+        parent = getattr(download, "parent_id", None)
+        if not parent:
+            raise ServiceError("nothing to search for")
+
+        params = {NOUNS[self.flavour]["id"]: parent}
+        if self.flavour == SONARR and season is not None:
+            params["seasonNumber"] = season
+        data = self.http.request("/api/v3/release", params=params, timeout=SEARCH_TIMEOUT)
+
+        found = []
+        for record in data or []:
+            quality = ((record.get("quality") or {}).get("quality") or {}).get("name") or ""
+            found.append(model.Release(
+                title=record.get("title") or "",
+                guid=record.get("guid"),
+                indexer_id=record.get("indexerId"),
+                size=record.get("size") or 0,
+                seeders=record.get("seeders"),
+                quality=quality,
+                indexer=record.get("indexer") or "",
+                protocol=record.get("protocol") or "",
+                age=record.get("age"),
+                rejected=record.get("rejected"),
+                rejections=record.get("rejections") or (),
+            ))
+        # What is worth taking first: accepted before rejected, then seeders.
+        found.sort(key=lambda r: (r.rejected, -(r.seeders or 0)))
+        return found
+
+    def grab(self, release):
+        """Take this exact release, whatever the *arr would have chosen."""
+        if not release.guid:
+            raise ServiceError("that release cannot be grabbed")
+        return self.http.request("/api/v3/release", method="post",
+                                 json={"guid": release.guid, "indexerId": release.indexer_id})
+
+    # ------------------------------------------------------------ adding new
+
+    def lookup(self, term):
+        """
+        Find something to add. `term` is a title, or "tvdb:1234" / "tmdb:1234",
+        which is what makes adding from a Plex watchlist exact rather than a
+        fuzzy title match.
+        """
+        nouns = NOUNS[self.flavour]
+        data = self.http.request("/api/v3/{0}/lookup".format(nouns["item"]),
+                                 params={"term": term})
+        found = []
+        for record in data or []:
+            found.append(model.Candidate(
+                title=record.get("title") or "",
+                year=record.get("year"),
+                ident=record.get(nouns["guid"]),
+                poster=self.poster({nouns["item"]: record}),
+                overview=record.get("overview") or "",
+                source=self.flavour,
+                # lookup only carries an id for things the service already has
+                added=bool(record.get("id")),
+            ))
+        return found
+
+    def profiles(self):
+        return [(p.get("id"), p.get("name") or "")
+                for p in self.http.request("/api/v3/qualityprofile") or []]
+
+    def rootFolders(self):
+        return [(f.get("id"), f.get("path") or "")
+                for f in self.http.request("/api/v3/rootfolder") or []]
+
+    def add(self, candidate, profile_id, root_folder, monitor=True, search=True):
+        """Add it, and start looking for it."""
+        nouns = NOUNS[self.flavour]
+        body = {
+            "title": candidate.title,
+            nouns["guid"]: candidate.ident,
+            "qualityProfileId": profile_id,
+            "rootFolderPath": root_folder,
+            "monitored": monitor,
+        }
+        if self.flavour == SONARR:
+            body["seasonFolder"] = True
+            body["addOptions"] = {"monitor": "all" if monitor else "none",
+                                  "searchForMissingEpisodes": bool(search)}
+        else:
+            body["minimumAvailability"] = "released"
+            body["addOptions"] = {"searchForMovie": bool(search)}
+        return self.http.request("/api/v3/{0}".format(nouns["item"]),
+                                 method="post", json=body, ok=(200, 201))
+
     def poster(self, record):
         """The artwork the *arr already knows about, so rows are not text-only."""
         for owner in (record.get("series") or {}, record.get("movie") or {}):
@@ -169,8 +350,11 @@ class ArrClient(object):
         title, subtitle = self._titles(record)
         state, message = self._state(record)
 
+        nouns = NOUNS[self.flavour]
         return model.Download(
             poster=self.poster(record),
+            service_id=record.get("id"),
+            parent_id=record.get(nouns["id"]),
             key="{0}:{1}".format(self.flavour, record.get("id") or record.get("downloadId") or title),
             title=title,
             subtitle=subtitle,

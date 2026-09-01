@@ -36,7 +36,7 @@ order they are worth building:
 3. **Search by name**, last, for the cases neither covers - with the on-screen
    keyboard, which a phone can drive over JSON-RPC anyway.
 
-## Phase 1 - clearing out
+## Phase 1 - clearing out  *(built)*
 
 A context menu on a Downloads tile:
 
@@ -57,11 +57,22 @@ Rules that matter more than the menu:
 Cost: no new window, no skin work. `arr.py` grows three methods, the context
 menu grows three entries.
 
-## Phase 2 - adding
+## Phase 2 - adding  *(search built; watchlist next)*
 
-**From the watchlist.** A "Download" action on a watchlist item:
+**Search and add** is built: the Add button on the Downloads screen takes a
+term, asks both services, shows what they found (marking what is already in
+your library), asks for quality and destination once and remembers them, then
+adds and searches. It is made of dialogs the add-on already had, which is what
+makes the watchlist route below cheap - it arrives at the same code with the
+term already known.
 
-1. Read the guid Plex already gave us (`tmdb://`, `tvdb://`).
+**From the watchlist** *(built)*. A "Download" action on a watchlist item.
+One correction to the plan above, found by looking: a watchlist row's own guid
+is `plex://movie/5d776832...`, which means nothing to an *arr. The ids it needs
+are the `Guid` children alongside it - `tmdb://9387`, `tvdb://1317` - which
+plexnet already parses into `item.guids`. So the flow is:
+
+1. Read the tmdb/tvdb id off `item.guids`, not the item's own guid.
 2. `lookup` by that guid, so the match is exact rather than fuzzy.
 3. If it is already in the *arr, say so and offer a search instead of adding twice.
 4. Otherwise add it with the remembered profile and root folder, monitored, and
@@ -77,13 +88,22 @@ single press.
 what will be searched and where it will land, and the item appears on the
 Downloads screen within a poll - which is the honest proof it worked.
 
-## Phase 3 - the rest
+## Phase 3 - the rest  *(interactive search and qBittorrent built)*
 
-- **Interactive search**: list what the indexers have, with size, seeders,
-  quality and rejection reasons, and grab one specifically. This is where a
-  stuck release gets replaced by a good one.
-- **qBittorrent controls**: pause, resume, priority - blocked on credentials
-  being configured at all, which they are not yet.
+- **Interactive search** *(built)*: what the indexers have, sorted best-first -
+  accepted before rejected, then by seeders - with size, quality, indexer and,
+  for the ones the *arr turned down, the reason. Grabbing takes that exact
+  release. Live, one season answered with 79 releases of which 22 were
+  rejected.
+
+  Two things only a live run showed. It takes **tens of seconds** - the *arr
+  waits on every indexer - so the six second timeout everything else uses is
+  far too short, and blocking the UI thread for that long would freeze Kodi
+  with its own spinner on screen. It runs on a worker now, with the UI pumped
+  while it waits.
+- **qBittorrent controls** *(built)*: pause, resume and remove, with files kept
+  unless deliberately asked for. qBittorrent 5 renamed pause and resume to stop
+  and start, so both are tried; this box runs 4.6.3.
 - **Per-item state in the library**: a missing season showing "not on disk" with
   a download action, rather than only being visible from the Downloads screen.
 

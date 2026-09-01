@@ -12,12 +12,14 @@ STALLED = "stalled"
 PAUSED = "paused"
 FAILED = "failed"
 DONE = "done"
+SEEDING = "seeding"
 
 # What belongs on screen: everything the stack still owes you.
 ACTIVE_STATES = (DOWNLOADING, IMPORTING, QUEUED, STALLED, PAUSED, FAILED)
 
 # The order rows are shown in - what is closest to landing goes on top.
-STATE_ORDER = {IMPORTING: 0, DOWNLOADING: 1, STALLED: 2, QUEUED: 3, PAUSED: 4, FAILED: 5, DONE: 6}
+STATE_ORDER = {IMPORTING: 0, DOWNLOADING: 1, STALLED: 2, QUEUED: 3, PAUSED: 4, FAILED: 5,
+               DONE: 6, SEEDING: 7}
 
 # qBittorrent's "no idea" eta, and its cousins elsewhere.
 UNKNOWN_ETA = 8640000
@@ -104,7 +106,7 @@ class Download(object):
 
     def __init__(self, key, title, source, state=QUEUED, progress=0.0, size=0,
                  eta=None, message="", subtitle="", section_type=None, poster="",
-                 at=None):
+                 at=None, service_id=None, parent_id=None):
         self.key = key
         self.title = title
         self.subtitle = subtitle
@@ -122,6 +124,13 @@ class Download(object):
         self.count = 1
         # ISO timestamp for history entries; None for anything still in flight.
         self.at = at
+        # The service's own ids: the queue record, and the series or movie it
+        # belongs to. Without them a row can be looked at but not acted on.
+        self.service_id = service_id
+        # A season pack is many queue records behind one row; acting on the row
+        # has to act on all of them or nine of the ten stay behind.
+        self.service_ids = [service_id] if service_id else []
+        self.parent_id = parent_id
 
     @property
     def percent(self):
@@ -150,3 +159,64 @@ class Download(object):
 
     def __ne__(self, other):
         return not self.__eq__(other)
+
+
+class Candidate(object):
+    """Something the *arr could add: a lookup result, not a download yet."""
+
+    def __init__(self, title, year=None, ident=None, poster="", overview="",
+                 source="", added=False):
+        self.title = title
+        self.year = year
+        self.ident = ident
+        self.poster = poster
+        self.overview = overview
+        self.source = source
+        # Already in the service's library - offering to add it again is a lie.
+        self.added = added
+
+    @property
+    def display(self):
+        return u"{0} ({1})".format(self.title, self.year) if self.year else self.title
+
+    def __repr__(self):
+        return "<Candidate {0} {1}>".format(self.source, repr(self.display))
+
+
+class Release(object):
+    """
+    One thing an indexer is offering. What matters on screen is whether it is
+    worth taking - size, seeders, quality - and, when the *arr has already
+    decided against it, why.
+    """
+
+    def __init__(self, title, guid, indexer_id, size=0, seeders=None, quality="",
+                 indexer="", protocol="", age=None, rejected=False, rejections=()):
+        self.title = title
+        self.guid = guid
+        self.indexer_id = indexer_id
+        self.size = size or 0
+        self.seeders = seeders
+        self.quality = quality
+        self.indexer = indexer
+        self.protocol = protocol
+        self.age = age
+        self.rejected = bool(rejected)
+        self.rejections = list(rejections or ())
+
+    @property
+    def display(self):
+        """One line, worst news first."""
+        parts = [self.quality or "?", formatSize(self.size) or "?"]
+        if self.seeders is not None:
+            parts.append("{0} seeders".format(self.seeders))
+        if self.indexer:
+            parts.append(self.indexer)
+        line = "  ·  ".join(parts)
+        if self.rejected:
+            reason = self.rejections[0] if self.rejections else ""
+            return u"[{0}] {1}{2}".format("rejected", line, u"  ·  " + reason if reason else "")
+        return line
+
+    def __repr__(self):
+        return "<Release {0} {1}>".format(repr(self.title[:30]), self.quality)
