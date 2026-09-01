@@ -13,6 +13,9 @@ MEDIA_HOST="${2:?missing media host}"
 QBT_USER="${3:-}"
 QBT_PASS="${4:-}"
 
+# The hosts are ssh targets, so they may carry a user; a URL must not.
+MEDIA_ADDR="${MEDIA_HOST##*@}"
+
 KODI_SSH="${KODI_SSH:-ssh}"
 MEDIA_SSH="${MEDIA_SSH:-ssh}"
 ARR_CONFIG_DIR="${ARR_CONFIG_DIR:-/var/lib}"
@@ -35,11 +38,19 @@ RADARR_PORT=$(read_port radarr); RADARR_PORT=${RADARR_PORT:-7878}
 [ -n "$SONARR_KEY" ] || echo "warning: no Sonarr key found" >&2
 [ -n "$RADARR_KEY" ] || echo "warning: no Radarr key found" >&2
 
+# qBittorrent is only written when credentials were given: an entry without
+# them is "configured" as far as the add-on is concerned, so it would poll,
+# get a 403 and put a permanent error on screen.
+QBT_ENTRY=""
+if [ -n "$QBT_USER" ]; then
+    QBT_ENTRY=",
+  \"qbittorrent\": {\"url\": \"http://$MEDIA_ADDR:8080\", \"user\": \"$QBT_USER\", \"pass\": \"$QBT_PASS\"}"
+fi
+
 JSON=$(cat <<JSONEOF
 {
-  "sonarr": {"url": "http://$MEDIA_HOST:$SONARR_PORT", "key": "$SONARR_KEY"},
-  "radarr": {"url": "http://$MEDIA_HOST:$RADARR_PORT", "key": "$RADARR_KEY"},
-  "qbittorrent": {"url": "http://$MEDIA_HOST:8080", "user": "$QBT_USER", "pass": "$QBT_PASS"}
+  "sonarr": {"url": "http://$MEDIA_ADDR:$SONARR_PORT", "key": "$SONARR_KEY"},
+  "radarr": {"url": "http://$MEDIA_ADDR:$RADARR_PORT", "key": "$RADARR_KEY"}$QBT_ENTRY
 }
 JSONEOF
 )
