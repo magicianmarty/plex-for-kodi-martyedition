@@ -73,10 +73,53 @@ class QbClient(object):
             self.login()
         return self.http.request("/api/v2/torrents/info", params={"filter": filter})
 
+    # ------------------------------------------------------------- controls
+
+    def pause(self, download):
+        return self._control(download, "pause", "stop")
+
+    def resume(self, download):
+        return self._control(download, "resume", "start")
+
+    def remove(self, download, delete_files=False):
+        """
+        Drop a torrent. Files are kept unless asked otherwise, same rule as the
+        *arr queue: deleting someone's download should take a deliberate press.
+        """
+        return self._control(download, "delete", None,
+                             extra={"deleteFiles": "true" if delete_files else "false"})
+
+    def _control(self, download, action, renamed, extra=None):
+        """
+        qBittorrent 5 renamed pause and resume to stop and start. Try what this
+        one is likely to want, and fall back rather than making the user care
+        which version they run.
+        """
+        torrent = getattr(download, "service_id", None)
+        if not torrent:
+            raise ServiceError("nothing to act on")
+        data = {"hashes": torrent}
+        data.update(extra or {})
+
+        try:
+            self._post(action, data)
+        except ServiceError as e:
+            if not renamed or e.status != 404:
+                raise
+            self._post(renamed, data)
+        return True
+
+    def _post(self, action, data):
+        if not self._authenticated:
+            self.login()
+        self.http.request("/api/v2/torrents/{0}".format(action), method="post",
+                          expect_json=False, data=data)
+
     @staticmethod
     def _download(record):
         state = STATES.get(str(record.get("state") or "").lower(), model.DOWNLOADING)
         return model.Download(
+            service_id=record.get("hash"),
             key="{0}:{1}".format(QBITTORRENT, record.get("hash") or record.get("name")),
             title=record.get("name") or "Unknown",
             subtitle=record.get("category") or "",

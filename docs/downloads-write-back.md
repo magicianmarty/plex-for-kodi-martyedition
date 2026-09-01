@@ -88,13 +88,22 @@ single press.
 what will be searched and where it will land, and the item appears on the
 Downloads screen within a poll - which is the honest proof it worked.
 
-## Phase 3 - the rest
+## Phase 3 - the rest  *(interactive search and qBittorrent built)*
 
-- **Interactive search**: list what the indexers have, with size, seeders,
-  quality and rejection reasons, and grab one specifically. This is where a
-  stuck release gets replaced by a good one.
-- **qBittorrent controls**: pause, resume, priority - blocked on credentials
-  being configured at all, which they are not yet.
+- **Interactive search** *(built)*: what the indexers have, sorted best-first -
+  accepted before rejected, then by seeders - with size, quality, indexer and,
+  for the ones the *arr turned down, the reason. Grabbing takes that exact
+  release. Live, one season answered with 79 releases of which 22 were
+  rejected.
+
+  Two things only a live run showed. It takes **tens of seconds** - the *arr
+  waits on every indexer - so the six second timeout everything else uses is
+  far too short, and blocking the UI thread for that long would freeze Kodi
+  with its own spinner on screen. It runs on a worker now, with the UI pumped
+  while it waits.
+- **qBittorrent controls** *(built)*: pause, resume and remove, with files kept
+  unless deliberately asked for. qBittorrent 5 renamed pause and resume to stop
+  and start, so both are tried; this box runs 4.6.3.
 - **Per-item state in the library**: a missing season showing "not on disk" with
   a download action, rather than only being visible from the Downloads screen.
 

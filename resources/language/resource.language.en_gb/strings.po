@@ -3576,3 +3576,35 @@ msgstr ""
 msgctxt "#35104"
 msgid "Download"
 msgstr ""
+
+msgctxt "#35105"
+msgid "Pause"
+msgstr ""
+
+msgctxt "#35106"
+msgid "Resume"
+msgstr ""
+
+msgctxt "#35107"
+msgid "Choose a release yourself"
+msgstr ""
+
+msgctxt "#35108"
+msgid "Paused {0}"
+msgstr ""
+
+msgctxt "#35109"
+msgid "Resumed {0}"
+msgstr ""
+
+msgctxt "#35110"
+msgid "No releases found"
+msgstr ""
+
+msgctxt "#35111"
+msgid "The service rejected this one:\n{0}"
+msgstr ""
+
+msgctxt "#35112"
+msgid "Grabbing {0}"
+msgstr ""

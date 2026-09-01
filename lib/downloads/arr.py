@@ -32,6 +32,11 @@ IMPORT_STATES = ("importpending", "importing", "importblocked", "importfailed")
 IMPORTED_EVENT = "import"
 HISTORY_PAGE = 30
 
+# An interactive search makes the *arr ask every indexer and wait for them, so
+# it takes tens of seconds where everything else here takes one. Measured
+# against a live Sonarr: 79 releases, well over the default timeout.
+SEARCH_TIMEOUT = 120.0
+
 
 # Sonarr matches on TVDB, Radarr on TMDB. A Plex item carries both, once you
 # look past its own guid: plex://movie/... says nothing to an *arr, but the
@@ -214,6 +219,51 @@ class ArrClient(object):
             body[nouns["search_ids"]] = parent
         self.http.request("/api/v3/command", method="post", json=body)
         return True
+
+    # ------------------------------------------------- picking a release yourself
+
+    def releases(self, download, season=None):
+        """
+        What the indexers are actually offering for this thing.
+
+        Slow - the *arr goes and asks every indexer - so it is only ever run
+        from an explicit action, never from a poll.
+        """
+        parent = getattr(download, "parent_id", None)
+        if not parent:
+            raise ServiceError("nothing to search for")
+
+        params = {NOUNS[self.flavour]["id"]: parent}
+        if self.flavour == SONARR and season is not None:
+            params["seasonNumber"] = season
+        data = self.http.request("/api/v3/release", params=params, timeout=SEARCH_TIMEOUT)
+
+        found = []
+        for record in data or []:
+            quality = ((record.get("quality") or {}).get("quality") or {}).get("name") or ""
+            found.append(model.Release(
+                title=record.get("title") or "",
+                guid=record.get("guid"),
+                indexer_id=record.get("indexerId"),
+                size=record.get("size") or 0,
+                seeders=record.get("seeders"),
+                quality=quality,
+                indexer=record.get("indexer") or "",
+                protocol=record.get("protocol") or "",
+                age=record.get("age"),
+                rejected=record.get("rejected"),
+                rejections=record.get("rejections") or (),
+            ))
+        # What is worth taking first: accepted before rejected, then seeders.
+        found.sort(key=lambda r: (r.rejected, -(r.seeders or 0)))
+        return found
+
+    def grab(self, release):
+        """Take this exact release, whatever the *arr would have chosen."""
+        if not release.guid:
+            raise ServiceError("that release cannot be grabbed")
+        return self.http.request("/api/v3/release", method="post",
+                                 json={"guid": release.guid, "indexerId": release.indexer_id})
 
     # ------------------------------------------------------------ adding new
 

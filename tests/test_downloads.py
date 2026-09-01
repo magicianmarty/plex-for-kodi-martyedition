@@ -38,7 +38,9 @@ class FakeHttp(object):
         self.base_url = base_url
 
     def request(self, path, method="get", expect_json=True, ok=(200,), **kwargs):
-        self.requests.append((method, path, kwargs.get("json", kwargs.get("params") or {})))
+        self.requests.append((method, path, kwargs.get("json",
+                                                       kwargs.get("params",
+                                                                  kwargs.get("data")) or {})))
         if self.raises:
             raise self.raises
         # Longest prefix wins, so /api/v3/series/lookup is not answered by the
@@ -668,3 +670,107 @@ class PlexItemTest(KodiTestCase):
 
     def test_without_ids_it_falls_back_to_the_title(self):
         self.assertEqual("Sisu", arr.lookupTerm(self.Item("movie", "Sisu"), RADARR))
+
+
+class ReleasePickingTest(KodiTestCase):
+    """
+    Taking over from the *arr and choosing the file yourself - the fix for a
+    grab that keeps failing. A live Sonarr answers this with 79 releases for
+    one season, so what matters is which one is put in front of you first.
+    """
+
+    RELEASES = [
+        {"title": "Show.S01.720p.WEB", "guid": "g1", "indexerId": 3, "size": 2000000000,
+         "seeders": 4, "indexer": "nzbgeek", "protocol": "usenet",
+         "quality": {"quality": {"name": "WEBDL-720p"}}, "rejected": False},
+        {"title": "Show.S01.2160p.REMUX", "guid": "g2", "indexerId": 3, "size": 60000000000,
+         "seeders": 56, "indexer": "torrentleech", "protocol": "torrent",
+         "quality": {"quality": {"name": "Bluray-2160p"}}, "rejected": False},
+        {"title": "Show.S01.CAM", "guid": "g3", "indexerId": 4, "size": 700000000,
+         "seeders": 300, "indexer": "somewhere", "protocol": "torrent",
+         "quality": {"quality": {"name": "CAM"}}, "rejected": True,
+         "rejections": ["Quality CAM is rejected by profile"]},
+    ]
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        self.client = sonarr({"/api/v3/release": self.RELEASES})
+        self.item = model.Download("k", "Show", SONARR, service_id=1, parent_id=7)
+
+    def test_the_best_bet_is_offered_first(self):
+        """Accepted before rejected, then by seeders - not the server's order."""
+        found = self.client.releases(self.item)
+        self.assertEqual(["Show.S01.2160p.REMUX", "Show.S01.720p.WEB", "Show.S01.CAM"],
+                         [r.title for r in found])
+
+    def test_a_release_says_what_it_is_worth(self):
+        best = self.client.releases(self.item)[0]
+        self.assertIn("Bluray-2160p", best.display)
+        self.assertIn("56 seeders", best.display)
+        self.assertIn("torrentleech", best.display)
+
+    def test_a_rejected_release_says_so_and_why(self):
+        """It is still offered - sometimes you want it anyway - but not quietly."""
+        worst = self.client.releases(self.item)[-1]
+        self.assertTrue(worst.rejected)
+        self.assertIn("rejected", worst.display)
+        self.assertIn("CAM is rejected", worst.display)
+
+    def test_the_search_is_scoped_to_the_right_thing(self):
+        self.client.releases(self.item, season=2)
+        _method, path, params = self.client.http.requests[0]
+        self.assertEqual("/api/v3/release", path)
+        self.assertEqual(7, params["seriesId"])
+        self.assertEqual(2, params["seasonNumber"])
+
+    def test_grabbing_names_the_exact_release(self):
+        release = self.client.releases(self.item)[0]
+        self.client.grab(release)
+        method, path, body = self.client.http.requests[-1]
+        self.assertEqual(("post", "/api/v3/release"), (method, path))
+        self.assertEqual({"guid": "g2", "indexerId": 3}, body)
+
+    def test_something_with_no_guid_cannot_be_grabbed(self):
+        with self.assertRaises(ServiceError):
+            self.client.grab(model.Release("t", None, 1))
+
+
+class TorrentControlTest(KodiTestCase):
+    """qBittorrent 4.6 here; 5 renamed pause and resume, so both are handled."""
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        self.client = qbittorrent({"/api/v2/auth/login": "Ok."})
+        self.item = model.Download("k", "T", QBITTORRENT, service_id="abc123")
+
+    def paths(self):
+        return [(m, p) for m, p, _ in self.client.http.requests if "torrents" in p]
+
+    def test_pause_and_resume_address_the_torrent(self):
+        self.client.pause(self.item)
+        self.client.resume(self.item)
+        self.assertEqual([("post", "/api/v2/torrents/pause"),
+                          ("post", "/api/v2/torrents/resume")], self.paths())
+
+    def test_removing_a_torrent_keeps_the_files(self):
+        self.client.remove(self.item)
+        data = [kw for m, p, kw in self.client.http.requests if p.endswith("delete")][0]
+        self.assertEqual("false", data["deleteFiles"])
+
+    def test_a_row_with_no_hash_is_refused(self):
+        with self.assertRaises(ServiceError):
+            self.client.pause(model.Download("k", "T", QBITTORRENT))
+
+    def test_qbittorrent_5_naming_is_handled(self):
+        class Renamed(FakeHttp):
+            """A qBittorrent 5, which has stop/start and no pause/resume."""
+
+            def request(self, path, method="get", **kwargs):
+                if path.endswith("/pause"):
+                    self.requests.append((method, path, {}))
+                    raise ServiceError("HTTP 404", status=404)
+                return FakeHttp.request(self, path, method, **kwargs)
+
+        self.client.http = Renamed({"/api/v2/auth/login": "Ok."})
+        self.client.pause(self.item)
+        self.assertIn(("post", "/api/v2/torrents/stop"), self.paths())

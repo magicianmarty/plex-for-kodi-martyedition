@@ -176,3 +176,42 @@ class Candidate(object):
 
     def __repr__(self):
         return "<Candidate {0} {1}>".format(self.source, repr(self.display))
+
+
+class Release(object):
+    """
+    One thing an indexer is offering. What matters on screen is whether it is
+    worth taking - size, seeders, quality - and, when the *arr has already
+    decided against it, why.
+    """
+
+    def __init__(self, title, guid, indexer_id, size=0, seeders=None, quality="",
+                 indexer="", protocol="", age=None, rejected=False, rejections=()):
+        self.title = title
+        self.guid = guid
+        self.indexer_id = indexer_id
+        self.size = size or 0
+        self.seeders = seeders
+        self.quality = quality
+        self.indexer = indexer
+        self.protocol = protocol
+        self.age = age
+        self.rejected = bool(rejected)
+        self.rejections = list(rejections or ())
+
+    @property
+    def display(self):
+        """One line, worst news first."""
+        parts = [self.quality or "?", formatSize(self.size) or "?"]
+        if self.seeders is not None:
+            parts.append("{0} seeders".format(self.seeders))
+        if self.indexer:
+            parts.append(self.indexer)
+        line = "  ·  ".join(parts)
+        if self.rejected:
+            reason = self.rejections[0] if self.rejections else ""
+            return u"[{0}] {1}{2}".format("rejected", line, u"  ·  " + reason if reason else "")
+        return line
+
+    def __repr__(self):
+        return "<Release {0} {1}>".format(repr(self.title[:30]), self.quality)

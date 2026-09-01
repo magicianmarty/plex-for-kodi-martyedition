@@ -17,7 +17,7 @@ from plexnet import plexapp
 
 from lib import backgroundthread
 from lib import util
-from lib.downloads import arr, discovery, model
+from lib.downloads import arr, discovery, model, qbittorrent
 from lib.downloads.config import DownloadsConfig
 from lib.downloads.manager import DownloadsManager
 from lib.i18n import T
@@ -68,6 +68,43 @@ def manager():
 def reset():
     global MANAGER
     MANAGER = None
+
+
+class CallTask(backgroundthread.Task):
+    """Runs one service call off the UI thread and keeps whatever it returned."""
+
+    def setup(self, call):
+        self.call = call
+        self.result = None
+        self.failed = None
+        return self
+
+    def run(self):
+        if self.isCanceled():
+            return
+        try:
+            self.result = self.call()
+        except Exception as e:
+            self.failed = e
+
+
+def runOffThread(call, message=None):
+    """
+    Do something slow without freezing Kodi.
+
+    An interactive search takes tens of seconds - the *arr asks every indexer -
+    and the UI thread cannot simply block for that: the spinner would freeze
+    with it. Hand it to a worker and pump the UI while waiting.
+    """
+    task = CallTask().setup(call)
+    backgroundthread.BGThreader.addTask(task)
+    with busy.BusyContext(delay=True, delay_time=0.2):
+        while not task.finished and not util.MONITOR.abortRequested():
+            xbmc.sleep(100)
+    if task.failed:
+        util.ERROR('downloads: {0}'.format(message or 'call failed'))
+        return None
+    return task.result
 
 
 class RefreshTask(backgroundthread.Task):
@@ -350,18 +387,34 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         if not client:
             return
 
-        options = [
-            {'key': 'remove', 'display': T(35087, "Remove from queue")},
-            {'key': 'blocklist', 'display': T(35088, "Remove and never take that release")},
-        ]
+        torrent = item.source == qbittorrent.QBITTORRENT
+        options = []
+        if torrent:
+            # A torrent client has no notion of searching again; it has a tap.
+            options.append({'key': 'pause', 'display': T(35105, "Pause")})
+            options.append({'key': 'resume', 'display': T(35106, "Resume")})
+        options.append({'key': 'remove', 'display': T(35087, "Remove from queue")})
+        if not torrent:
+            options.append({'key': 'blocklist',
+                            'display': T(35088, "Remove and never take that release")})
         if getattr(item, 'parent_id', None):
             options.append({'key': 'search', 'display': T(35089, "Search again")})
+            options.append({'key': 'releases', 'display': T(35107, "Choose a release yourself")})
 
         choice = dropdown.showDropdown(options, (600, 400), with_indicator=False)
         if not choice:
             return
         if choice['key'] == 'search':
             self.runWrite(client.searchAgain, item, T(35090, "Searching again for {0}"))
+            return
+        if choice['key'] == 'releases':
+            self.pickRelease(client, item)
+            return
+        if choice['key'] == 'pause':
+            self.runWrite(client.pause, item, T(35108, "Paused {0}"), forget=False)
+            return
+        if choice['key'] == 'resume':
+            self.runWrite(client.resume, item, T(35109, "Resumed {0}"), forget=False)
             return
 
         blocklist = choice['key'] == 'blocklist'
@@ -376,7 +429,38 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         self.runWrite(lambda i: client.remove(i, blocklist=blocklist), item,
                       T(35092, "Removed {0}"))
 
-    def runWrite(self, call, item, message):
+    def pickRelease(self, client, item):
+        """
+        Take over from the *arr and choose the file yourself.
+
+        This is the fix for a grab that keeps failing: the list says what each
+        release is, how well seeded it is, and - for the ones the *arr already
+        turned down - why.
+        """
+        found = runOffThread(lambda: client.releases(item), 'release search')
+        if not found:
+            util.showNotification(T(35110, "No releases found"), header=T(35059, "Downloads"))
+            return False
+
+        options = [{'key': index, 'display': release.display}
+                   for index, release in enumerate(found[:40])]
+        choice = dropdown.showDropdown(options, (400, 200), with_indicator=False,
+                                       header=item.title)
+        if not choice:
+            return False
+
+        release = found[choice['key']]
+        warning = T(35111, "The service rejected this one:\n{0}").format(
+            release.rejections[0] if release.rejections else "") if release.rejected else ""
+        if optionsdialog.show(T(35107, "Choose a release yourself"),
+                              u"{0}\n\n{1}".format(release.title, warning).strip(),
+                              T(32328, 'Yes'), T(32329, 'No')) != 0:
+            return False
+
+        return self.runWrite(lambda _i: client.grab(release), item,
+                             T(35112, "Grabbing {0}"), forget=False)
+
+    def runWrite(self, call, item, message, forget=True):
         """Every write reports what happened: a silent failure looks like a bug."""
         ok = []
         with busy.BusyContext(delay=True, delay_time=0.2):
@@ -388,7 +472,8 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             return False
 
         util.showNotification(message.format(item.title), header=T(35059, "Downloads"))
-        self.draw(self.manager.forget(item))
+        if forget:
+            self.draw(self.manager.forget(item))
         self.refresh(force=True)
         return True
 
@@ -515,11 +600,8 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             client = services.get(flavour)
             if not client:
                 continue
-            try:
-                with busy.BusyContext(delay=True, delay_time=0.2):
-                    found.extend(client.lookup(term))
-            except Exception:
-                util.ERROR('downloads: lookup failed for {0}'.format(flavour))
+            found.extend(runOffThread(lambda c=client: c.lookup(term),
+                                      'lookup on {0}'.format(flavour)) or [])
         return found
 
     def scanLibraries(self):
