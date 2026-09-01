@@ -238,6 +238,63 @@ class ProfileTest(KodiTestCase):
         self.assertEqual("ATMOS", self.sectionBadges.label(badges.ATMOS, FakeItem("11")))
 
 
+class ShowSectionTest(KodiTestCase):
+    """
+    Badging a series. A series carries no Media at all - its episodes do - and
+    the server confirms it: a TV section answers dovi=1 with nothing, but
+    type=4&dovi=1 with every matching episode. So the question is asked of the
+    episodes and answered about the series.
+    """
+
+    def episodes(self, *rows):
+        return "<MediaContainer>{0}</MediaContainer>".format("".join(
+            '<Video ratingKey="{0}" grandparentRatingKey="{1}"/>'.format(ep, show)
+            for ep, show in rows))
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        metadata = ("<MediaContainer><Video ratingKey='900'><Media><Part>"
+                    "<Stream streamType='1' DOVIProfile='8'/></Part></Media></Video>"
+                    "</MediaContainer>")
+        self.server = FakeServer({
+            "dovi=1": self.episodes(("900", "7"), ("901", "7")),
+            "hdr=1": self.episodes(("900", "7")),
+            "atmos=1": self.episodes(("910", "8")),
+            "resolution=4k": self.episodes(("920", "9")),
+            "/library/metadata/": metadata,
+        })
+        section = FakeSection(self.server)
+        section.TYPE = "show"
+        self.sectionBadges = badges.SectionBadges(section)
+        self.sectionBadges.load()
+
+    def test_the_episodes_are_asked_about_not_the_series(self):
+        paths = [p for p, _ in self.server.queries if "type=4" in p]
+        self.assertEqual(4, len(paths))
+
+    def test_a_series_inherits_what_its_episodes_have(self):
+        self.assertEqual({badges.DV, badges.HDR}, self.sectionBadges.of(FakeItem("7")))
+        self.assertEqual({badges.ATMOS}, self.sectionBadges.of(FakeItem("8")))
+        self.assertEqual({badges.UHD}, self.sectionBadges.of(FakeItem("9")))
+
+    def test_a_series_with_nothing_special_gets_nothing(self):
+        self.assertEqual(set(), self.sectionBadges.of(FakeItem("99")))
+
+    def test_the_dolby_vision_profile_is_read_off_one_episode(self):
+        """One sample episode per series, not one request per episode."""
+        self.assertEqual("DV8", self.sectionBadges.label(badges.DV, FakeItem("7")))
+        metadata = [p for p, _ in self.server.queries if "/library/metadata/" in p]
+        self.assertEqual(1, len(metadata))
+        self.assertIn("900", metadata[0])
+
+    def test_a_movie_section_still_asks_about_items(self):
+        server = FakeServer({"dovi=1": listing("11"), "hdr=1": listing()})
+        movies = badges.SectionBadges(FakeSection(server))
+        movies.load()
+        self.assertEqual([], [p for p, _ in server.queries if "type=4" in p])
+        self.assertEqual({badges.DV}, movies.of(FakeItem("11")))
+
+
 class SlotTest(KodiTestCase):
     """
     The skin draws three chips at fixed positions, so the code decides which

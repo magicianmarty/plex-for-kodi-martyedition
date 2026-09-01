@@ -47,7 +47,14 @@ LABELS = {DV: "DV", ATMOS: "ATMOS", HDR: "HDR", DTSX: "DTS:X",
 MAX_SHOWN = 3
 
 # What the server calls the filters these come from.
-FILTERS = {DV: "dovi", HDR: "hdr"}
+#
+# A movie listing already gives away Atmos and resolution, so only Dolby Vision
+# and HDR have to be asked for. A show gives away nothing - a series carries no
+# Media at all, the episodes do - so everything is asked for, at episode level,
+# and mapped back to the series through grandparentRatingKey. Checked live:
+# a TV section answers dovi=1 with 0 shows but type=4&dovi=1 with 65 episodes.
+MOVIE_FILTERS = {DV: "dovi=1", HDR: "hdr=1"}
+SHOW_FILTERS = {DV: "dovi=1", HDR: "hdr=1", ATMOS: "atmos=1", UHD: "resolution=4k"}
 
 # A section's worth of keys, capped: past this the request costs more than the
 # badges are worth, and a library that size is not curated anyway.
@@ -144,16 +151,19 @@ class SectionBadges(object):
 
     def __init__(self, section):
         self.section = section
+        self.isShow = str(getattr(section, "TYPE", "") or "") == "show"
         self.keys = {}
         # {ratingKey: "7"} - which Dolby Vision profile, where the server says.
         self.profiles = {}
+        # For shows: one Dolby Vision episode per series, to read the profile off.
+        self.samples = {}
         self.loaded = False
 
     def load(self):
         if self.loaded or not self.section:
             return self.loaded
-        for badge, filter_name in FILTERS.items():
-            self.keys[badge] = self._keys(filter_name)
+        for badge, query in (SHOW_FILTERS if self.isShow else MOVIE_FILTERS).items():
+            self.keys[badge] = self._keys(query, sample=badge == DV)
         self._loadProfiles()
         self.loaded = True
         return True
@@ -168,7 +178,10 @@ class SectionBadges(object):
         /library/metadata takes a comma-separated list, so the whole section
         costs one round trip.
         """
-        keys = sorted(self.keys.get(DV) or ())
+        # For shows the profile lives on an episode, not on the series.
+        lookup = dict((self.samples[k], k) for k in self.keys.get(DV) or ()
+                      if k in self.samples) if self.isShow else {}
+        keys = sorted(lookup) if self.isShow else sorted(self.keys.get(DV) or ())
         for start in range(0, len(keys), PROFILE_BATCH):
             batch = keys[start:start + PROFILE_BATCH]
             data = self.section.server.query("/library/metadata/{0}".format(",".join(batch)))
@@ -181,19 +194,34 @@ class SectionBadges(object):
                 for stream in video.iter("Stream"):
                     profile = stream.attrib.get("DOVIProfile")
                     if profile:
-                        self.profiles[str(key)] = str(profile)
+                        self.profiles[lookup.get(str(key), str(key))] = str(profile)
                         break
 
-    def _keys(self, filter_name):
-        path = "/library/sections/{0}/all?{1}=1".format(self.section.key, filter_name)
+    def _keys(self, query, sample=False):
+        """
+        The items in this section matching one filter.
+
+        For a show section the question is asked of the episodes and answered
+        about their series - a series is 4K because its episodes are.
+        """
+        path = "/library/sections/{0}/all?{1}".format(self.section.key, query)
+        if self.isShow:
+            path += "&type=4"
         data = self.section.server.query(path, limit=MAX_KEYS)
         if data is None:
             return set()
+
         found = set()
         for element in data:
-            key = element.attrib.get("ratingKey")
-            if key:
-                found.add(str(key))
+            attrs = element.attrib
+            key = attrs.get("grandparentRatingKey") if self.isShow else attrs.get("ratingKey")
+            if not key:
+                continue
+            key = str(key)
+            found.add(key)
+            # Keep one episode per series to read the Dolby Vision profile from.
+            if sample and self.isShow and key not in self.samples and attrs.get("ratingKey"):
+                self.samples[key] = str(attrs["ratingKey"])
         return found
 
     def label(self, badge, item):
