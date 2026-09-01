@@ -2310,6 +2310,7 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
         plexapp.util.APP.on('change:hub_season_thumbnails', self.setDirty)
         plexapp.util.APP.on('change:use_watchlist', self.setDirty)
         plexapp.util.APP.on('change:hubs_linear', self.onLinearHubsChanged)
+        plexapp.util.APP.on('library:updated', self.onLibraryUpdated)
         plexapp.util.APP.on('change:hubs_use_new_continue_watching', self.onContinueWatchingModeChanged)
         plexapp.util.APP.on('change:force_pd_mapping', self.setHostsDirty)
         plexapp.util.APP.on('change:debug', self.setDebugFlag)
@@ -4702,6 +4703,25 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
                 return
         else:
             self.onNewServer()
+
+    def onLibraryUpdated(self, sectionID=None, titles=None, **kwargs):
+        """
+        The server says a section changed. Runs on the event listener's thread,
+        so it only marks state dirty and lets the next tick redraw - touching
+        controls from here would be a crash on someone's TV.
+        """
+        try:
+            sections = [str(sectionID)] if sectionID else list(self.sectionHubs.keys())
+            for key in sections:
+                hubs = self.sectionHubs.get(key)
+                if hubs:
+                    hubs.lastUpdated = time.time() - HUBS_REFRESH_INTERVAL - 1
+            util.DEBUG_LOG("Home: library {0} updated, hubs marked stale", sectionID or "(all)")
+
+            if titles and util.getSetting('library_events_notify', True):
+                util.showNotification(", ".join(titles[:3]), header=T(35080, "New in your library"))
+        except Exception:
+            util.ERROR("Home: could not handle library update")
 
     def onSelectedServerChange(self, **kwargs):
         if self.serverRefresh():

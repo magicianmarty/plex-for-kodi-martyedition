@@ -21,6 +21,7 @@ from kodi_six import xbmc
 
 sys.modules['_asyncio'] = None
 
+from . import plexevents
 from . import plex
 from . import localmode
 
@@ -134,6 +135,7 @@ def main(force_render=False):
         util.cleanupCacheFolder()
 
         with util.Cron(1 / util.addonSettings.tickrate):
+            plexevents.start()
             BACKGROUND = background.BackgroundWindow.create(function=_main)
             if BACKGROUND.waitForOpen():
                 with kodigui.GlobalProperty('running'):
@@ -146,6 +148,7 @@ def main(force_render=False):
             else:
                 util.LOG("Couldn't start main loop, exiting.")
     finally:
+        plexevents.stop()
         try:
             util.setGlobalProperty('ignore_spinner', '')
             util.setGlobalProperty('is_active', '')
