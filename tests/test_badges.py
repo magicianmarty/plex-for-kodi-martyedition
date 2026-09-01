@@ -19,6 +19,24 @@ from .base import KodiTestCase
 
 
 class FakeMedium(object):
+    """
+    Shaped like plexnet's PlexMedia: __slots__, and the XML attributes reachable
+    only through get(). A fake with plain attributes is what let the first
+    version ship broken - getattr() answered empty for every item on the box
+    while every test passed.
+    """
+    __slots__ = ("_data",)
+
+    def __init__(self, videoResolution="", audioProfile=""):
+        self._data = {"videoResolution": videoResolution, "audioProfile": audioProfile}
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+
+class PlainMedium(object):
+    """Some callers hand back plain attributes; both shapes have to work."""
+
     def __init__(self, videoResolution="", audioProfile=""):
         self.videoResolution = videoResolution
         self.audioProfile = audioProfile
@@ -73,6 +91,16 @@ class ListingBadgesTest(KodiTestCase):
     def test_plain_media_earns_nothing(self):
         item = FakeItem(media=[FakeMedium(videoResolution="1080", audioProfile="lc")])
         self.assertEqual(set(), badges.fromMedia(item))
+
+    def test_the_attributes_are_read_the_way_plexnet_exposes_them(self):
+        """PlexMedia has __slots__: getattr sees nothing, get() sees everything."""
+        medium = FakeMedium(videoResolution="4k")
+        self.assertEqual("4k", badges.attr(medium, "videoResolution"))
+        self.assertEqual("", badges.attr(medium, "nonsense"))
+
+    def test_a_plain_attribute_object_works_too(self):
+        item = FakeItem(media=[PlainMedium(videoResolution="4k")])
+        self.assertEqual({badges.UHD}, badges.fromMedia(item))
 
     def test_an_item_with_no_media_does_not_raise(self):
         self.assertEqual(set(), badges.fromMedia(FakeItem()))

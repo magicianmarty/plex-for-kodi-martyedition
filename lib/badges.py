@@ -41,13 +41,29 @@ FILTERS = {DV: "dovi", HDR: "hdr"}
 MAX_KEYS = 5000
 
 
+def attr(medium, name):
+    """
+    One media attribute, however this object chooses to expose it.
+
+    plexnet's PlexMedia defines __slots__ and keeps the XML attributes in a
+    dict behind get() - so getattr() on it always answers empty, silently,
+    which is exactly how this shipped once already.
+    """
+    getter = getattr(medium, "get", None)
+    if callable(getter):
+        value = getter(name)
+        if value is not None:
+            return str(value)
+    return str(getattr(medium, name, "") or "")
+
+
 def fromMedia(item):
     """Badges readable straight off a library listing."""
     found = set()
     media = getattr(item, "media", None) or []
     for medium in media:
-        resolution = str(getattr(medium, "videoResolution", "") or "").lower()
-        profile = str(getattr(medium, "audioProfile", "") or "").lower()
+        resolution = attr(medium, "videoResolution").lower()
+        profile = attr(medium, "audioProfile").lower()
         if resolution == "4k":
             found.add(UHD)
         if "atmos" in profile:

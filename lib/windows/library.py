@@ -520,6 +520,7 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
         # Active boolean filters as {filter_key: True}. Start clean on upgrade: old
         # filter.unwatched/filter.hdr/filter.dovi keys are intentionally not read.
         self.badges = None
+        self._badgesFailed = False
         self.boolFilters = self.librarySettings.getSetting('filter.bools', {}) or {}
         self.filter = self.filter or self.librarySettings.getSetting('filter', None)
         self.sort = self.librarySettings.getSetting('sort', self.section.DEFAULT_SORT)
@@ -1927,6 +1928,11 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
         try:
             found = self.badges.of(obj) if self.badges else badges.fromMedia(obj)
         except Exception:
+            # Once, not per item: a thousand tiles would bury the log. Silence
+            # here is what made an empty badge set look like "no 4K films".
+            if not self._badgesFailed:
+                self._badgesFailed = True
+                util.ERROR('library: could not read badges')
             return
         # Fixed slots, filled in priority order: the skin draws chip 1, 2 and 3
         # at fixed positions, so nothing has to be measured or reflowed.
