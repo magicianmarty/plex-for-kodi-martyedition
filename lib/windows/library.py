@@ -19,6 +19,7 @@ from plexnet import util as pnUtil
 from six.moves import range
 
 from lib import backgroundthread
+from lib import badges
 from lib import player
 from lib import util
 from lib import shuffle
@@ -307,6 +308,22 @@ class CreateDefaultItemsTask(backgroundthread.Task):
             items.append(mli)
         self.callback(items, self.key, firstMli)
 
+class BadgeTask(backgroundthread.Task):
+    def setup(self, sectionBadges, callback):
+        self.sectionBadges = sectionBadges
+        self.callback = callback
+        return self
+
+    def run(self):
+        if self.isCanceled():
+            return
+        try:
+            if self.sectionBadges.load() and not self.isCanceled():
+                self.callback()
+        except Exception:
+            util.ERROR('library: badge lookup failed')
+
+
 class ChunkRequestTask(backgroundthread.Task):
     def setup(self, section, start, size, callback, filter_=None, sort=None, subDir=False, bool_filters=None):
         self.section = section
@@ -502,9 +519,12 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
         util.setGlobalProperty('sort', '')
         # Active boolean filters as {filter_key: True}. Start clean on upgrade: old
         # filter.unwatched/filter.hdr/filter.dovi keys are intentionally not read.
+        self.badges = None
+        self._badgesFailed = False
         self.boolFilters = self.librarySettings.getSetting('filter.bools', {}) or {}
         self.filter = self.filter or self.librarySettings.getSetting('filter', None)
         self.sort = self.librarySettings.getSetting('sort', self.section.DEFAULT_SORT)
+        self.loadBadges()
         self.sortDesc = self.librarySettings.getSetting('sort.desc', self.section.DEFAULT_SORT_DESC)
 
         self.alreadyFetchedChunkList = set()
@@ -1897,6 +1917,48 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
             self.lock.release()
             break
 
+    def setBadges(self, mli, obj):
+        """
+        Mark a tile with the formats worth spotting from across a room.
+
+        Resolution and audio profile come free with the listing; Dolby Vision
+        and HDR need the section's answer, which arrives on a background thread
+        - until it does the tile simply shows fewer badges.
+        """
+        try:
+            found = self.badges.of(obj) if self.badges else badges.fromMedia(obj)
+        except Exception:
+            # Once, not per item: a thousand tiles would bury the log. Silence
+            # here is what made an empty badge set look like "no 4K films".
+            if not self._badgesFailed:
+                self._badgesFailed = True
+                util.ERROR('library: could not read badges')
+            return
+        # Fixed slots, filled in priority order: the skin draws chip 1, 2 and 3
+        # at fixed positions, so nothing has to be measured or reflowed.
+        shown = badges.ordered(found)
+        for slot in range(1, badges.MAX_SHOWN + 1):
+            label = badges.LABELS[shown[slot - 1]] if len(shown) >= slot else ''
+            mli.setProperty('badge.{0}'.format(slot), label)
+
+    def loadBadges(self):
+        """Ask the server which items are Dolby Vision or HDR, once per section."""
+        if self.badges or self.section.TYPE not in ('movie', 'show', 'movies_shows'):
+            return
+        self.badges = badges.SectionBadges(self.section)
+        backgroundthread.BGThreader.addTask(BadgeTask().setup(self.badges, self.onBadgesLoaded))
+
+    def onBadgesLoaded(self):
+        """Re-badge what is already on screen, now that we know more."""
+        if not self.showPanelControl or self.closing:
+            return
+        try:
+            for mli in self.showPanelControl:
+                if mli and mli.dataSource:
+                    self.setBadges(mli, mli.dataSource)
+        except Exception:
+            util.ERROR('library: could not apply badges')
+
     def _chunkCallback(self, items, start):
         if not self.showPanelControl or not items or self.closing:
             return
@@ -1929,6 +1991,7 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                         mli.setThumbnailImage(obj.defaultThumb.asTranscodedImageURL(*thumbDim))
 
                         mli.setProperty('summary', obj.summary)
+                        self.setBadges(mli, obj)
 
                         #mli.setLabel2(util.durationToText(obj.fixedDuration()))
                         mli.setLabel2(subtitle)
@@ -1998,6 +2061,7 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                                 mli.setThumbnailImage(obj.defaultThumb.asTranscodedImageURL(*thumbDim))
                         mli.dataSource = obj
                         mli.setProperty('summary', obj.get('summary'))
+                        self.setBadges(mli, obj)
 
                         # get secondary sort based info
                         sk_data = SORT_KEYS[self.section.TYPE].get(self.sort, {'subDisplay': None})

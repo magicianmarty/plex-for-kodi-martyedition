@@ -3476,3 +3476,23 @@ msgstr ""
 msgctxt "#35079"
 msgid "Enter value"
 msgstr ""
+
+msgctxt "#35080"
+msgid "New in your library"
+msgstr ""
+
+msgctxt "#35081"
+msgid "Refresh the library as soon as the server changes it"
+msgstr ""
+
+msgctxt "#35082"
+msgid "Say when a download finishes"
+msgstr ""
+
+msgctxt "#35083"
+msgid "Scan libraries"
+msgstr ""
+
+msgctxt "#35084"
+msgid "Downloading"
+msgstr ""

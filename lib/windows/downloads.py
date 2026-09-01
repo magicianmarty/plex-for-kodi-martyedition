@@ -25,6 +25,14 @@ from lib.i18n import T
 from . import kodigui
 from . import windowutils
 
+STATE_COLOURS = {
+    model.DOWNLOADING: "FFE5A00D",
+    model.IMPORTING: "FF5CD05C",
+    model.STALLED: "FFCC7B19",
+    model.FAILED: "FFE54B4B",
+}
+DEFAULT_STATE_COLOUR = "FFB4B4B4"
+
 STATE_LABELS = {
     model.DOWNLOADING: (35052, "Downloading"),
     model.IMPORTING: (35053, "Importing"),
@@ -91,8 +99,20 @@ class DiscoveryTask(backgroundthread.Task):
 
 
 def announce(finished):
-    """Tell the user what landed, and optionally point Plex at it."""
-    for item in finished:
+    """
+    Tell the user what landed, and optionally point Plex at it.
+
+    Two rules, both learned the hard way: only things the service actually
+    imported get announced, and nothing interrupts playback - a popup over a
+    film is worse than finding out afterwards.
+    """
+    if not finished or not util.getSetting("downloads_notify", True):
+        return
+    if xbmc.getCondVisibility("Player.HasVideo"):
+        util.DEBUG_LOG("Downloads: {0} finished, not announcing over playback", len(finished))
+        return
+
+    for item in finished[:3]:
         util.showNotification(T(35077, "{0} finished downloading").format(item.title),
                               header=T(35059, "Downloads"))
     if not util.getSetting("downloads_scan_on_finish", False):
@@ -143,11 +163,12 @@ class AmbientTask(backgroundthread.Task):
         if self.isCanceled():
             return
         snapshot = self.mgr.refresh()
-        finished = [self.mgr.finishedItems(key) for key in self.mgr.finished()]
+        finished = self.mgr.finished()
         count, percent = snapshot.summary()
         util.setGlobalProperty("downloads.count", count and str(count) or "")
         util.setGlobalProperty("downloads.percent", count and str(percent) or "")
-        announce([item for item in finished if item])
+        announce(finished)
+        plexapp.util.APP.trigger("downloads:updated", count=count)
 
 
 class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
@@ -163,6 +184,7 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
     HOME_BUTTON_ID = 201
     REFRESH_BUTTON_ID = 203
     PLAYER_STATUS_BUTTON_ID = 204
+    SCAN_BUTTON_ID = 205
 
     def __init__(self, *args, **kwargs):
         kodigui.ControlledWindow.__init__(self, *args, **kwargs)
@@ -176,7 +198,20 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         self.setProperty('heading', T(35059, "Downloads"))
         self.draw(self.manager.snapshot)
         self.refresh(force=True)
-        self.setFocusId(self.LIST_ID)
+        self.focusBest()
+
+    def focusBest(self):
+        """
+        Focus something that exists.
+
+        The list is hidden while it is empty, and a window whose focus lands on
+        a hidden control backs straight out again - which is exactly what
+        happened on the first open, before any poll had filled the cache.
+        """
+        if self.listControl.size():
+            self.setFocusId(self.LIST_ID)
+        else:
+            self.setFocusId(self.SCAN_BUTTON_ID)
 
     def onAction(self, action):
         try:
@@ -191,6 +226,8 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             self.goHome()
         elif controlID == self.REFRESH_BUTTON_ID:
             self.refresh(force=True)
+        elif controlID == self.SCAN_BUTTON_ID:
+            self.scanLibraries()
         elif controlID == self.PLAYER_STATUS_BUTTON_ID:
             self.showAudioPlayer()
 
@@ -215,9 +252,13 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
     def onRefreshed(self, snapshot):
         self.task = None
         self.setBoolProperty('refreshing', False)
-        finished = [self.manager.finishedItems(key) for key in self.manager.finished()]
-        announce([item for item in finished if item])
+        announce(self.manager.finished())
+        had = self.listControl.size()
         self.draw(snapshot)
+        # First rows to arrive: move focus onto them, since it is parked on the
+        # action row while there is nothing to look at.
+        if not had and self.listControl.size():
+            self.focusBest()
 
     def discover(self):
         """
@@ -245,20 +286,80 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             # Found them, but they still want a key we do not have.
             self.drawEmpty(T(35074, "Found: {0}").format(", ".join(sorted(found))))
 
+    def scanLibraries(self):
+        """
+        Ask Plex to look for new files in every video library you own. The same
+        action as the one in a library's own menu, but here it needs no menu
+        dive - this is the screen you are on when you are waiting for something
+        to show up.
+        """
+        server = getattr(plexapp.SERVERMANAGER, "selectedServer", None)
+        if not server or not getattr(server, "owned", False):
+            util.showNotification(T(35060, "No download services configured"),
+                                  header=T(33082, "Scan Library Files"))
+            return
+
+        scanned = []
+        for section in server.library.sections():
+            if getattr(section, "TYPE", None) not in ("movie", "show", "movies_shows"):
+                continue
+            try:
+                section.refresh()
+                scanned.append(section.title)
+            except Exception:
+                util.ERROR("Downloads: scan failed for {0}".format(section.key))
+
+        util.showNotification(T(35050, "Scanning {0}").format(", ".join(scanned) or "-"),
+                              header=T(33082, "Scan Library Files"))
+
     def draw(self, snapshot):
         items = [self.createListItem(item) for item in snapshot.items]
         self.listControl.replaceItems(items)
         self.setBoolProperty('no.content', not items)
 
+        count, percent = snapshot.summary()
+        self.setProperty('summary.count', count and str(count) or '')
+        self.setProperty('summary.percent', count and "{0}%".format(percent) or '')
+
         if snapshot.errors:
             self.setProperty('status', T(35061, "Not answering: {0}").format(
                 ", ".join(sorted(snapshot.errors))))
         elif snapshot.updated:
-            count, percent = snapshot.summary()
-            self.setProperty('status', T(35062, "{0} active").format(count) if count
+            self.setProperty('status', self.summaryLine(snapshot) if count
                              else T(35063, "Nothing downloading"))
         if not items and not snapshot.errors and snapshot.updated:
             self.drawEmpty(T(35063, "Nothing downloading"))
+
+    @staticmethod
+    def detailLine(item):
+        """
+        The one line under the state. Percent and ETA while it moves, size when
+        it does not - a paused item showing "0s left" is worse than silence.
+        """
+        parts = []
+        if item.state in (model.DOWNLOADING, model.STALLED):
+            parts.append("{0}%".format(item.percent))
+            if item.etaDisplay():
+                parts.append(item.etaDisplay())
+        if item.sizeDisplay():
+            parts.append(item.sizeDisplay())
+        return "  ·  ".join(parts)
+
+    @staticmethod
+    def summaryLine(snapshot):
+        """e.g. "3 downloading - 2 importing - 47%"."""
+        parts = []
+        for state, (ident, default) in ((model.DOWNLOADING, STATE_LABELS[model.DOWNLOADING]),
+                                        (model.IMPORTING, STATE_LABELS[model.IMPORTING]),
+                                        (model.QUEUED, STATE_LABELS[model.QUEUED]),
+                                        (model.FAILED, STATE_LABELS[model.FAILED])):
+            hits = [i for i in snapshot.active if i.state == state]
+            if hits:
+                parts.append("{0} {1}".format(len(hits), T(ident, default).lower()))
+        _count, percent = snapshot.summary()
+        if percent:
+            parts.append("{0}%".format(percent))
+        return "  -  ".join(parts)
 
     def drawEmpty(self, message):
         self.listControl.reset()
@@ -270,16 +371,23 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         mli = kodigui.ManagedListItem(
             item.title,
             item.subtitle,
+            thumbnailImage=item.poster or '',
             data_source=item,
         )
+        mli.setProperty('thumb.fallback',
+                        'script.plex/thumb_fallbacks/{0}.png'.format(
+                            'show' if item.section_type == 'show' else 'movie'))
         mli.setProperty('state', T(state_id, state_default))
         mli.setProperty('state.key', item.state)
+        mli.setProperty('state.colour', STATE_COLOURS.get(item.state, DEFAULT_STATE_COLOUR))
         mli.setProperty('percent', str(item.percent))
         mli.setProperty('percent.display', "{0}%".format(item.percent))
-        mli.setProperty('eta', item.etaDisplay())
-        mli.setProperty('size', item.sizeDisplay())
         mli.setProperty('source', item.source)
+        mli.setProperty('detail', self.detailLine(item))
         mli.setProperty('message', item.message or '')
+        # The bar is only meaningful while something is actually moving.
+        mli.setProperty('has.progress', item.state in (model.DOWNLOADING, model.STALLED,
+                                                       model.PAUSED) and '1' or '')
         return mli
 
 

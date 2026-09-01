@@ -3,6 +3,8 @@
 
 from __future__ import absolute_import
 
+import re
+
 DOWNLOADING = "downloading"
 QUEUED = "queued"
 IMPORTING = "importing"
@@ -19,6 +21,29 @@ STATE_ORDER = {IMPORTING: 0, DOWNLOADING: 1, STALLED: 2, QUEUED: 3, PAUSED: 4, F
 
 # qBittorrent's "no idea" eta, and its cousins elsewhere.
 UNKNOWN_ETA = 8640000
+
+
+# Where a scene name stops being a title and starts being specifications.
+RELEASE_SPLIT_RE = re.compile(r"\b(S\d{1,2}(?:E\d{1,3})?|\d{3,4}p|(?:19|20)\d{2})\b", re.I)
+
+
+def prettifyRelease(name):
+    """
+    Turn 'House.Of.The.Dragon.S02.2160p.UHD.BluRay.REMUX.DV' into a title and a
+    subtitle.
+
+    Only used when the service has nothing better - a grab whose series it no
+    longer knows about - but that is exactly when the row is least readable,
+    and a wall of dotted scene names is the thing that makes a screen feel
+    unfinished.
+    """
+    clean = " ".join(name.replace(".", " ").replace("_", " ").split())
+    if not clean:
+        return "", ""
+    match = RELEASE_SPLIT_RE.search(clean)
+    if not match or match.start() == 0:
+        return clean, ""
+    return clean[:match.start()].strip(" -"), clean[match.start():].strip()
 
 
 def formatSize(size):
@@ -78,7 +103,8 @@ class Download(object):
     """
 
     def __init__(self, key, title, source, state=QUEUED, progress=0.0, size=0,
-                 eta=None, message="", subtitle="", section_type=None):
+                 eta=None, message="", subtitle="", section_type=None, poster="",
+                 at=None):
         self.key = key
         self.title = title
         self.subtitle = subtitle
@@ -91,6 +117,11 @@ class Download(object):
         # 'show' or 'movie' where we know it, so a finished item can point at
         # the Plex library it belongs to.
         self.section_type = section_type
+        self.poster = poster
+        # How many queue records this row stands for: a season pack is many.
+        self.count = 1
+        # ISO timestamp for history entries; None for anything still in flight.
+        self.at = at
 
     @property
     def percent(self):

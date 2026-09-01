@@ -1,0 +1,35 @@
+event: ping
+data: {}
+
+event: activity
+data: {"ActivityNotification":{"event":"started","uuid":"7251fc2d","Activity":{"uuid":"7251fc2d","type":"library.update.section","cancellable":false,"userID":1,"title":"Scanning","subtitle":"","progress":0}}}
+
+event: status
+data: {"StatusNotification":{"title":"Scanning the \"Movies\" section","description":"","notificationName":"LIBRARY_UPDATE"}}
+
+event: activity
+data: {"ActivityNotification":{"event":"updated","uuid":"7251fc2d","Activity":{"uuid":"7251fc2d","type":"library.update.section","cancellable":false,"userID":1,"title":"Scanning Movies","subtitle":"Conan the Barbarian (1982)","progress":0,"Context":{"librarySectionID":"3"}}}}
+
+event: activity
+data: {"ActivityNotification":{"event":"updated","uuid":"7251fc2d","Activity":{"uuid":"7251fc2d","type":"library.update.section","cancellable":false,"userID":1,"title":"Scanning Movies","subtitle":"The Revenant (2015)","progress":1,"Context":{"librarySectionID":"3"}}}}
+
+event: timeline
+data: {"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"86099","type":1,"title":"Conan the Barbarian","state":5,"mediaState":"analyzing","updatedAt":1788253594}}
+
+event: timeline
+data: {"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"86099","type":1,"title":"Conan the Barbarian","state":5,"updatedAt":1788253594}}
+
+event: timeline
+data: {"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"86099","type":1,"title":"Conan the Barbarian","state":5,"updatedAt":1788253633}}
+
+event: timeline
+data: {"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"2","itemID":"86098","type":4,"title":"Band of Brothers S01 E01","state":3,"updatedAt":1788253594}}
+
+event: activity
+data: {"ActivityNotification":{"event":"ended","uuid":"7251fc2d","Activity":{"uuid":"7251fc2d","type":"library.update.section","cancellable":false,"userID":1,"title":"Scanning Movies","subtitle":"1984 (1984)","progress":100,"Context":{"librarySectionID":"3"}}}}
+
+event: activity
+data: {"ActivityNotification":{"event":"ended","uuid":"7e2bb139","Activity":{"uuid":"7e2bb139","type":"provider.subscriptions.process","cancellable":true,"userID":1,"title":"Processing subscriptions","subtitle":"","progress":100}}}
+
+event: status
+data: {"StatusNotification":{"title":"Library scan complete","description":"Extra information may still be downloading from the Internet","notificationName":"LIBRARY_UPDATE"}}

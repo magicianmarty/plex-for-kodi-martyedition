@@ -258,6 +258,157 @@ class LibraryOptionsMenuTest(MixinTestCase):
         self.assertEqual(0, section.refreshed)
 
 
+class DownloadsPresentationTest(MixinTestCase):
+    """The bits of the Downloads screen that are decisions, not layout."""
+
+    def setUp(self):
+        MixinTestCase.setUp(self)
+        self.downloads = import_window_module("lib.windows.downloads")
+        from lib.downloads import model
+        self.model = model
+
+    def item(self, state, percent=50, eta=600, size=1024 ** 3):
+        return self.model.Download("k", "T", "sonarr", state, percent / 100.0,
+                                   size=size, eta=eta)
+
+    def test_a_moving_item_leads_with_how_far_and_how_long(self):
+        line = self.downloads.DownloadsWindow.detailLine(self.item(self.model.DOWNLOADING))
+        self.assertTrue(line.startswith("50%"))
+        self.assertIn("10m", line)
+
+    def test_a_paused_item_does_not_claim_an_eta(self):
+        """"0s left" under something that is not moving is worse than silence."""
+        line = self.downloads.DownloadsWindow.detailLine(self.item(self.model.PAUSED))
+        self.assertNotIn("10m", line)
+        self.assertNotIn("%", line)
+
+    def test_each_state_is_told_apart_by_colour(self):
+        colours = {self.downloads.STATE_COLOURS.get(s, self.downloads.DEFAULT_STATE_COLOUR)
+                   for s in (self.model.DOWNLOADING, self.model.IMPORTING,
+                             self.model.FAILED, self.model.QUEUED)}
+        self.assertEqual(4, len(colours))
+
+    def test_the_summary_counts_what_is_happening(self):
+        from lib.downloads.manager import Snapshot
+        snapshot = Snapshot([
+            self.model.Download("a", "A", "sonarr", self.model.DOWNLOADING, 0.5),
+            self.model.Download("b", "B", "sonarr", self.model.DOWNLOADING, 0.1),
+            self.model.Download("c", "C", "radarr", self.model.IMPORTING, 1.0),
+        ])
+        line = self.downloads.DownloadsWindow.summaryLine(snapshot)
+        self.assertIn("2 downloading", line)
+        self.assertIn("1 importing", line)
+        self.assertIn("30%", line)
+
+
+class WindowFocusTest(MixinTestCase):
+    def setUp(self):
+        MixinTestCase.setUp(self)
+        self.downloads = import_window_module("lib.windows.downloads")
+
+    def window(self, item_count):
+        window = self.downloads.DownloadsWindow.__new__(self.downloads.DownloadsWindow)
+        window.focused = []
+        window.setFocusId = window.focused.append
+        window.listControl = type("L", (), {"size": lambda _self: item_count})()
+        return window
+
+    def test_an_empty_screen_focuses_something_that_exists(self):
+        """
+        The list control is hidden while empty, and focus landing on a hidden
+        control backs the window straight out - which is what happened on the
+        very first open, before any poll had filled the cache.
+        """
+        window = self.window(0)
+        window.focusBest()
+        self.assertEqual([self.downloads.DownloadsWindow.SCAN_BUTTON_ID], window.focused)
+
+    def test_with_rows_the_list_takes_focus(self):
+        window = self.window(3)
+        window.focusBest()
+        self.assertEqual([self.downloads.DownloadsWindow.LIST_ID], window.focused)
+
+
+class NotificationRulesTest(MixinTestCase):
+    def setUp(self):
+        MixinTestCase.setUp(self)
+        self.downloads = import_window_module("lib.windows.downloads")
+        from lib.downloads import model
+        self.finished = [model.Download("k", "Conan the Barbarian", "radarr", model.DONE, 1.0)]
+
+    def test_a_finished_download_is_announced(self):
+        self.downloads.announce(self.finished)
+        self.assertTrue([n for n in self.notifications() if "Conan" in n])
+
+    def test_nothing_interrupts_a_film(self):
+        """A popup over playback is worse than finding out afterwards."""
+        from kodienv import ENV
+        ENV.cond_visibility["Player.HasVideo"] = True
+
+        self.downloads.announce(self.finished)
+
+        self.assertEqual([], self.notifications())
+
+    def test_the_setting_turns_it_off(self):
+        from kodienv import ENV
+        ENV.settings["downloads_notify"] = "false"
+
+        self.downloads.announce(self.finished)
+
+        self.assertEqual([], self.notifications())
+
+
+class DownloadsHubTest(MixinTestCase):
+    """The row of tiles under the Downloads tile on the home screen."""
+
+    def setUp(self):
+        MixinTestCase.setUp(self)
+        self.home = import_window_module("lib.windows.home")
+        from lib.downloads import model
+        self.model = model
+
+    def tile(self, **kw):
+        defaults = dict(key="k", title="Masters of the Air", source="sonarr",
+                        state=self.model.DOWNLOADING, progress=0.42)
+        defaults.update(kw)
+        return self.model.Download(**defaults)
+
+    def test_a_download_can_stand_in_for_a_hub_item(self):
+        """
+        The hub row asks its items for Plex attributes as it draws and as focus
+        moves; PlexObject answers anything it does not have with an empty
+        value, and so must this, or a redraw raises on someone's TV.
+        """
+        stand_in = self.home.DownloadTile(self.tile())
+        self.assertEqual("Masters of the Air", stand_in.title)
+        self.assertEqual("", stand_in.thumb)
+        self.assertEqual("", stand_in.get("anything"))
+        self.assertFalse(stand_in.in_progress)
+
+    def test_a_tile_carries_what_it_needs_to_be_drawn(self):
+        window = self.home.HomeWindow.__new__(self.home.HomeWindow)
+        mli = window.createDownloadTile(self.tile(subtitle="Season 1", poster="http://art"))
+
+        self.assertEqual("Masters of the Air", mli.label)
+        self.assertTrue(isinstance(mli.dataSource, self.home.DownloadTile))
+
+    def test_progress_is_a_texture_the_skin_can_draw(self):
+        """
+        The hub layout draws progress with <texture>ListItem.Property(progress)</texture>,
+        so a bare "42" renders nothing at all. Only even-numbered images ship.
+        """
+        window = self.home.HomeWindow.__new__(self.home.HomeWindow)
+        mli = window.createDownloadTile(self.tile(progress=0.43))
+
+        self.assertEqual("script.plex/progress/42.png", mli.getProperty("progress"))
+
+    def test_nothing_started_yet_gets_no_bar(self):
+        window = self.home.HomeWindow.__new__(self.home.HomeWindow)
+        mli = window.createDownloadTile(self.tile(progress=0.0))
+
+        self.assertEqual("", mli.getProperty("progress"))
+
+
 class BothWindowsShareItTest(KodiTestCase):
     def test_the_home_screen_and_the_library_screen_use_the_same_code(self):
         """

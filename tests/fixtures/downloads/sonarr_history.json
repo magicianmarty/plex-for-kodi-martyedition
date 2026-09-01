@@ -1,0 +1,20 @@
+{
+  "page": 1, "pageSize": 30, "totalRecords": 4,
+  "records": [
+    {"id": 501, "eventType": "downloadFolderImported", "date": "2026-09-01T09:40:10Z",
+     "sourceTitle": "Band.of.Brothers.S01.E06.Bastogne.2160p.UPSCALE.BluRay",
+     "series": {"id": 7, "title": "Band of Brothers", "images": [{"coverType": "poster", "remoteUrl": "http://art/bob.jpg"}]},
+     "episode": {"seasonNumber": 1, "episodeNumber": 6, "title": "Bastogne"}},
+    {"id": 500, "eventType": "grabbed", "date": "2026-09-01T09:39:00Z",
+     "sourceTitle": "Band.of.Brothers.S01.E06.Bastogne.2160p.UPSCALE.BluRay",
+     "series": {"id": 7, "title": "Band of Brothers"},
+     "episode": {"seasonNumber": 1, "episodeNumber": 6, "title": "Bastogne"}},
+    {"id": 499, "eventType": "downloadFolderImported", "date": "2026-09-01T09:33:28Z",
+     "sourceTitle": "Band.of.Brothers.S01.E05.Crossroads.2160p.UPSCALE.BluRay",
+     "series": {"id": 7, "title": "Band of Brothers"},
+     "episode": {"seasonNumber": 1, "episodeNumber": 5, "title": "Crossroads"}},
+    {"id": 498, "eventType": "downloadFailed", "date": "2026-09-01T09:20:00Z",
+     "sourceTitle": "Something.That.Failed.1080p",
+     "series": {"id": 8, "title": "Something"}}
+  ]
+}

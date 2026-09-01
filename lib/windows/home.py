@@ -369,6 +369,47 @@ class PlaylistsSection(VirtualSection):
 playlists_section = PlaylistsSection()
 
 
+class DownloadsSection(VirtualSection):
+    """
+    A tile on the top bar rather than an entry buried in a context menu: what
+    the stack is fetching is something you check at a glance, the same way you
+    check what is on Deck.
+    """
+    key = 'downloads'
+    type = 'downloads'
+    title = T(35059, 'Downloads')
+
+    locations = []
+    isMapped = False
+
+
+downloads_section = DownloadsSection()
+
+
+class DownloadTile(object):
+    """
+    A download dressed as a hub item.
+
+    The hub row asks its items for all sorts of Plex attributes while it draws
+    and while focus moves. PlexObject answers anything it does not have with an
+    empty value, so this does the same rather than raising in the middle of a
+    redraw on someone's TV.
+    """
+    TYPE = 'download'
+    type = 'download'
+    in_progress = False
+
+    def __init__(self, download):
+        self.download = download
+        self.title = download.title
+
+    def get(self, name, default=''):
+        return default
+
+    def __getattr__(self, name):
+        return ''
+
+
 # item types that can be pinned to the top bar as a view of their own, per library type
 PINNABLE_TYPES = {
     'movie': ('collection',),
@@ -2310,6 +2351,8 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
         plexapp.util.APP.on('change:hub_season_thumbnails', self.setDirty)
         plexapp.util.APP.on('change:use_watchlist', self.setDirty)
         plexapp.util.APP.on('change:hubs_linear', self.onLinearHubsChanged)
+        plexapp.util.APP.on('library:updated', self.onLibraryUpdated)
+        plexapp.util.APP.on('downloads:updated', self.onDownloadsUpdated)
         plexapp.util.APP.on('change:hubs_use_new_continue_watching', self.onContinueWatchingModeChanged)
         plexapp.util.APP.on('change:force_pd_mapping', self.setHostsDirty)
         plexapp.util.APP.on('change:debug', self.setDebugFlag)
@@ -2996,6 +3039,10 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
             return
 
         if mli.dataSource is None:
+            return
+
+        if isinstance(mli.dataSource, DownloadTile):
+            self.processCommand(opener.handleOpen(downloads.DownloadsWindow))
             return
 
         # auto resume for in-progress items
@@ -3904,6 +3951,9 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
             if pl:
                 sections.append(playlists_section)
 
+        if downloads.configured():
+            sections.append(downloads_section)
+
         try:
             _sections = plexapp.SERVERMANAGER.selectedServer.library.sections()
         except plexnet.exceptions.BadRequest:
@@ -3951,7 +4001,8 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
         if plexapp.SERVERMANAGER.selectedServer.hasHubs():
             # Include hidden sections that are needed for cross-section hubs.
             # Pinned item-type views share their library's hubs, so they're never fetched.
-            fetch_sections = [s for s in sections if not isinstance(s, PinnedTypeSection)]
+            fetch_sections = [s for s in sections
+                              if not isinstance(s, (PinnedTypeSection, DownloadsSection))]
             required_sources = self.getRequiredSourceSections(None)  # Home's required sources
             for source_key in required_sources:
                 str_key = str(source_key) if source_key is not None else None
@@ -4084,6 +4135,10 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
     def _showHubs(self, section=None, update=False, force=False, reselect_pos_dict=None):
         if not update:
             self.clearHubs()
+
+        if isinstance(section, DownloadsSection):
+            self.showDownloadsHub()
+            return
 
         if not section.server.DEFER_HUBS and not plexapp.SERVERMANAGER.selectedServer.hasHubs():
             return
@@ -4283,6 +4338,52 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
                 except Exception:
                     util.ERROR("Home: failed to restore focus after hub cleanup")
         self.storeLastBG()
+
+    def showDownloadsHub(self):
+        """
+        The row under the Downloads tile: what is in flight, as tiles.
+
+        Built directly rather than through _showHub, which is written around
+        Plex hub objects - spoiler rules, watched state, transcoded artwork -
+        none of which mean anything here.
+        """
+        self.setBoolProperty('no.content', False)
+        snapshot = downloads.manager().snapshot
+        items = [item for item in snapshot.items if item.active][:20]
+
+        for index, control in enumerate(self.hubControls):
+            if index == 0 and items:
+                control.replaceItems([self.createDownloadTile(item) for item in items])
+                control.dataSource = None
+                self.setProperty('hub.400', T(35084, "Downloading"))
+            else:
+                control.reset()
+                self.setProperty('hub.4{0:02d}'.format(index), '')
+
+        # Nothing cached yet, or it has gone stale: ask, and the poll's callback
+        # brings us back here.
+        downloads.tick(force=not items)
+
+    def createDownloadTile(self, item):
+        mli = kodigui.ManagedListItem(item.title, item.subtitle,
+                                      thumbnailImage=item.poster or '',
+                                      data_source=DownloadTile(item))
+        mli.setProperty('thumb.fallback', 'script.plex/thumb_fallbacks/{0}.png'.format(
+            'show' if item.section_type == 'show' else 'movie'))
+        # The skin draws progress from a texture path, not a number - setting
+        # "42" here renders nothing at all. getProgressImage rounds to the
+        # even-numbered images that actually ship.
+        mli.setProperty('progress', util.getProgressImage(None, perc=item.percent))
+        mli.setProperty('state', item.state)
+        return mli
+
+    def onDownloadsUpdated(self, **kwargs):
+        """A poll finished: if that row is on screen, redraw it."""
+        try:
+            if isinstance(self.lastSection, DownloadsSection):
+                self.showDownloadsHub()
+        except Exception:
+            util.ERROR("Home: could not redraw the downloads hub")
 
     def showHub(self, hub, items=None, is_home=False, reselect_pos=None, hub_index=None):
         identifier = hub.getCleanHubIdentifier(is_home=is_home)
@@ -4685,6 +4786,8 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
             self.sectionChangeTimeout = None
         elif section.type in ('playlists',):
             self.processCommand(opener.handleOpen(playlists.PlaylistsWindow))
+        elif section.type in ('downloads',):
+            self.processCommand(opener.handleOpen(downloads.DownloadsWindow))
 
     def onNewServer(self, **kwargs):
         self.showServers(from_refresh=True)
@@ -4702,6 +4805,22 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
                 return
         else:
             self.onNewServer()
+
+    def onLibraryUpdated(self, sectionID=None, titles=None, **kwargs):
+        """
+        The server says a section changed. Runs on the event listener's thread,
+        so it only marks state dirty and lets the next tick redraw - touching
+        controls from here would be a crash on someone's TV.
+        """
+        try:
+            sections = [str(sectionID)] if sectionID else list(self.sectionHubs.keys())
+            for key in sections:
+                hubs = self.sectionHubs.get(key)
+                if hubs:
+                    hubs.lastUpdated = time.time() - HUBS_REFRESH_INTERVAL - 1
+            util.DEBUG_LOG("Home: library {0} updated, hubs marked stale", sectionID or "(all)")
+        except Exception:
+            util.ERROR("Home: could not handle library update")
 
     def onSelectedServerChange(self, **kwargs):
         if self.serverRefresh():

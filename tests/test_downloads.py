@@ -49,14 +49,19 @@ class FakeHttp(object):
         raise ServiceError("HTTP 404", status=404)
 
 
-def sonarr(answers=None, raises=None):
+def sonarr(answers=None, raises=None, history=None):
     client = ArrClient("http://box:8989", "key", flavour=SONARR)
+    answers = dict(answers or {})
+    answers.setdefault("/api/v3/history", history if history is not None
+                       else {"records": []})
     client.http = FakeHttp(answers, raises)
     return client
 
 
 def radarr(answers=None):
     client = ArrClient("http://box:7878", "key", flavour=RADARR)
+    answers = dict(answers or {})
+    answers.setdefault("/api/v3/history", {"records": []})
     client.http = FakeHttp(answers)
     return client
 
@@ -94,6 +99,42 @@ class FormattingTest(KodiTestCase):
         self.assertIsNone(model.parseTimeleft("soon"))
 
 
+class ReleaseNameTest(KodiTestCase):
+    """
+    What a row looks like when the service knows nothing about the item - a
+    grab whose series was removed. It is the least readable row on the screen,
+    so it gets the most help.
+    """
+
+    def test_a_scene_name_becomes_a_title_and_a_spec(self):
+        title, detail = model.prettifyRelease(
+            "House.Of.The.Dragon.S02.2160p.UHD.BluRay.REMUX.DV.HDR10.TrueHD.7.1")
+        self.assertEqual("House Of The Dragon", title)
+        self.assertTrue(detail.startswith("S02 2160p"))
+
+    def test_a_film_splits_on_its_year(self):
+        title, detail = model.prettifyRelease("Conan.the.Barbarian.1982.2160p.UHD.BluRay")
+        self.assertEqual("Conan the Barbarian", title)
+        self.assertTrue(detail.startswith("1982"))
+
+    def test_something_unparseable_is_left_readable(self):
+        title, detail = model.prettifyRelease("some_odd_release")
+        self.assertEqual("some odd release", title)
+        self.assertEqual("", detail)
+
+    def test_a_name_that_is_all_spec_keeps_its_name(self):
+        title, _detail = model.prettifyRelease("2160p.BluRay")
+        self.assertEqual("2160p BluRay", title)
+
+    def test_the_queue_uses_it_when_the_service_knows_nothing(self):
+        client = sonarr({"/api/v3/queue": {"records": [
+            {"id": 1, "size": 100, "sizeleft": 50, "status": "downloading",
+             "title": "House.Of.The.Dragon.S02.2160p.UHD.BluRay.REMUX"}]}})
+        item = client.queue()[0]
+        self.assertEqual("House Of The Dragon", item.title)
+        self.assertIn("2160p", item.subtitle)
+
+
 class SonarrQueueTest(KodiTestCase):
     def setUp(self):
         KodiTestCase.setUp(self)
@@ -104,7 +145,26 @@ class SonarrQueueTest(KodiTestCase):
         return [item for item in self.items if item.title == title][0]
 
     def test_the_queue_is_read(self):
-        self.assertEqual(4, len(self.items))
+        """Seven records, but three of them are one grab: four rows."""
+        self.assertEqual(5, len(self.items))
+
+    def test_a_season_pack_is_one_row_not_one_per_episode(self):
+        """
+        Sonarr sends a pack as one record per episode - same release, same
+        size, same progress - which put ten identical rows on the screen.
+        """
+        pack = self.byTitle("Band of Brothers")
+        self.assertEqual(3, pack.count)
+        self.assertEqual("Season 1  -  3 episodes", pack.subtitle)
+
+    def test_a_pack_is_only_as_finished_as_its_least_finished_episode(self):
+        pack = self.byTitle("Band of Brothers")
+        self.assertEqual(model.DOWNLOADING, pack.state)
+        self.assertEqual(0, pack.percent)
+        self.assertEqual("4h", pack.etaDisplay())
+
+    def test_a_lone_record_is_left_alone(self):
+        self.assertEqual(1, self.byTitle("Andor").count)
 
     def test_an_episode_is_named_by_what_it_is_not_by_its_release(self):
         """'Andor.S02E03.2160p.WEB-DL.DV.HDR.x265' is unreadable across a room."""
@@ -135,7 +195,9 @@ class SonarrQueueTest(KodiTestCase):
         self.assertEqual("1d 2h", item.etaDisplay())
 
     def test_a_failing_grab_carries_its_reason(self):
-        item = self.byTitle("Unknown.Release.1080p")
+        # No series known, so the row is named from the release: "Unknown
+        # Release" rather than "Unknown.Release.1080p".
+        item = self.byTitle("Unknown Release")
         self.assertEqual(model.FAILED, item.state)
         self.assertIn("eligible for import", item.message)
 
@@ -156,13 +218,14 @@ class SonarrQueueTest(KodiTestCase):
         _method, path, params = self.client.http.requests[0]
         self.assertEqual("/api/v3/queue", path)
         self.assertEqual("true", params["includeSeries"])
+        self.assertEqual("true", params["includeEpisode"])
         self.assertEqual("true", params["includeUnknownSeriesItems"])
 
     def test_a_bare_list_still_parses(self):
         """Sonarr v3 answered with a list; v4 paginates. Both are in the wild."""
         records = fixture("sonarr_queue.json")["records"]
         client = sonarr({"/api/v3/queue": records})
-        self.assertEqual(4, len(client.queue()))
+        self.assertEqual(5, len(client.queue()))
 
     def test_keys_are_stable_across_polls(self):
         again = sonarr({"/api/v3/queue": fixture("sonarr_queue.json")}).queue()
@@ -313,7 +376,7 @@ class ManagerTest(KodiTestCase):
                            radarr({"/api/v3/queue": fixture("radarr_queue.json")}))
         snapshot = mgr.refresh()
 
-        self.assertEqual(5, len(snapshot.items))
+        self.assertEqual(6, len(snapshot.items))
         # Importing first, then downloading, then queued, then failed.
         self.assertEqual(model.IMPORTING, snapshot.items[0].state)
         self.assertEqual(model.FAILED, snapshot.items[-1].state)
@@ -330,7 +393,7 @@ class ManagerTest(KodiTestCase):
         working.http.raises = ServiceError("unreachable")
         snapshot = mgr.refresh()
 
-        self.assertEqual(4, len(snapshot.items))
+        self.assertEqual(5, len(snapshot.items))
         self.assertTrue(snapshot.stale)
         self.assertIn(SONARR, snapshot.errors)
 
@@ -342,23 +405,54 @@ class ManagerTest(KodiTestCase):
         self.assertEqual(1, len(snapshot.items))
         self.assertEqual([SONARR], list(snapshot.errors))
 
-    def test_what_disappeared_since_last_time_is_what_landed(self):
-        client = sonarr({"/api/v3/queue": fixture("sonarr_queue.json")})
+    def test_only_what_the_service_imported_counts_as_finished(self):
+        """
+        Not "it left the queue": an entry also disappears when it is removed,
+        blocked or fails, and announcing those as finished downloading is how
+        the notifications stop being believed.
+        """
+        client = sonarr({"/api/v3/queue": fixture("sonarr_queue.json")},
+                        history={"records": []})
         mgr = self.manager(client)
         mgr.refresh()
         mgr.finished()
 
-        data = fixture("sonarr_queue.json")
-        data["records"] = [r for r in data["records"] if r["id"] != 12]
-        client.http.answers["/api/v3/queue"] = data
+        client.http.answers["/api/v3/history"] = fixture("sonarr_history.json")
         mgr.refresh()
 
         finished = mgr.finished()
-        self.assertEqual(1, len(finished))
-        self.assertEqual("Severance", mgr.finishedItems(finished[0]).title)
+        self.assertEqual(["Band of Brothers", "Band of Brothers"],
+                         [f.title for f in finished])
+        self.assertEqual(["S01E06 - Bastogne", "S01E05 - Crossroads"],
+                         [f.subtitle for f in finished])
 
-    def test_the_first_poll_does_not_announce_everything_as_finished(self):
-        mgr = self.manager(sonarr({"/api/v3/queue": fixture("sonarr_queue.json")}))
+    def test_a_grab_or_a_failure_is_not_a_finish(self):
+        client = sonarr({"/api/v3/queue": {"records": []}}, history={"records": []})
+        mgr = self.manager(client)
+        mgr.refresh()
+        client.http.answers["/api/v3/history"] = fixture("sonarr_history.json")
+        mgr.refresh()
+
+        self.assertEqual(2, len(mgr.finished()))  # 4 records, 2 of them imports
+
+    def test_the_first_poll_announces_nothing(self):
+        """
+        Everything in history finished before the add-on started; announcing it
+        on launch would be a wall of notifications for last week.
+        """
+        mgr = self.manager(sonarr({"/api/v3/queue": fixture("sonarr_queue.json")},
+                                  history=fixture("sonarr_history.json")))
+        mgr.refresh()
+        self.assertEqual([], mgr.finished())
+
+    def test_the_same_import_is_not_announced_on_every_poll(self):
+        client = sonarr({"/api/v3/queue": {"records": []}}, history={"records": []})
+        mgr = self.manager(client)
+        mgr.refresh()
+        client.http.answers["/api/v3/history"] = fixture("sonarr_history.json")
+        mgr.refresh()
+        self.assertEqual(2, len(mgr.finished()))
+
         mgr.refresh()
         self.assertEqual([], mgr.finished())
 
