@@ -99,7 +99,8 @@
                                 <colordiffuse>FFCC7B19</colordiffuse>
                             </control>
                         </control>
-                        {% include "includes/watched_indicator.xml.tpl" with xoff=263 & uw_size=45 & with_count=True & scale="medium" %}
+                        {% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=0 & chip_w=58 & chip_h=22 & chip_slots=3 & chip_font="font10" %}
+{% include "includes/watched_indicator.xml.tpl" with xoff=263 & uw_size=45 & with_count=True & scale="medium" %}
                     </control>
                 </control>
             </itemlayout>
@@ -170,7 +171,8 @@
                                     <colordiffuse>FFCC7B19</colordiffuse>
                                 </control>
                             </control>
-                            {% include "includes/watched_indicator.xml.tpl" with xoff=263 & uw_size=45 & with_count=True & scale="medium" %}
+                            {% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=0 & chip_w=58 & chip_h=22 & chip_slots=3 & chip_font="font10" %}
+{% include "includes/watched_indicator.xml.tpl" with xoff=263 & uw_size=45 & with_count=True & scale="medium" %}
                         </control>
                     </control>
                 </control>

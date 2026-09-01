@@ -415,6 +415,10 @@ class IntegerSetting(BasicSetting):
     type = 'INTEGER'
 
 
+class StringSetting(BasicSetting):
+    type = 'STRING'
+
+
 class KeySetting(BasicSetting):
     type = 'STRING'
 
@@ -669,6 +673,12 @@ class Settings(object):
         ),
         'ui': (
             T(32467, 'User Interface'), (
+                BoolSetting('library_badges',
+                            T(35085, 'Show format badges on library tiles'), True)
+                .description(T(35086, "Dolby Vision (with its profile), Atmos, DTS:X, HDR, "
+                                      "resolution and channel layout, shown on the artwork. "
+                                      "Dolby Vision and HDR cost one request per library when "
+                                      "it is opened; everything else is already in the listing.")),
                 OptionsSetting(
                     'theme',
                     T(32983, 'Theme'),
@@ -1068,6 +1078,27 @@ class Settings(object):
                 IntegerSetting('manual_port_1', T(32047, 'Connection 2 Port'), 32400),
             )
         ),
+        'downloads': (
+            T(35065, 'Downloads and services'), (
+                InfoSetting('downloads_help', T(35065, 'Downloads and services'),
+                            T(35076, "Entering keys with a remote is miserable. Drop a downloads.json into "
+                                     "the add-on's profile directory instead - see the README - and these "
+                                     "fields stay empty.")),
+                StringSetting('downloads_sonarr_url', T(35066, 'Sonarr address'), ''),
+                StringSetting('downloads_sonarr_key', T(35067, 'Sonarr API key'), ''),
+                StringSetting('downloads_radarr_url', T(35068, 'Radarr address'), ''),
+                StringSetting('downloads_radarr_key', T(35069, 'Radarr API key'), ''),
+                StringSetting('downloads_qbt_url', T(35070, 'qBittorrent address'), ''),
+                StringSetting('downloads_qbt_user', T(35071, 'qBittorrent username'), ''),
+                StringSetting('downloads_qbt_pass', T(35072, 'qBittorrent password'), ''),
+                BoolSetting('library_events',
+                            T(35081, 'Refresh the library as soon as the server changes it'), True),
+                BoolSetting('downloads_notify',
+                            T(35082, 'Say when a download finishes'), True),
+                BoolSetting('downloads_scan_on_finish',
+                            T(35078, 'Scan the Plex library when a download finishes'), False),
+            )
+        ),
         'system': (
             T(33600, 'System'), (
                 BoolSetting('auto_update_check', T(33672, 'Check for updates'), True)
@@ -1189,7 +1220,7 @@ class Settings(object):
         ),
     }
 
-    SECTION_IDS = ('main', 'video', 'audio', 'ui', 'player', 'player_user', 'network', 'system', 'about')
+    SECTION_IDS = ('main', 'video', 'audio', 'ui', 'player', 'player_user', 'network', 'downloads', 'system', 'about')
 
     def __getitem__(self, key):
         return self.SETTINGS[key]
@@ -1443,7 +1474,8 @@ class SettingsWindow(kodigui.BaseWindow, windowutils.UtilMixin):
                 mli.setLabel2(str(result))
             return
         else:
-            result = xbmcgui.Dialog().input(T(32417, 'Enter Port Number'), str(setting.get()), xbmcgui.INPUT_STRING)
+            result = xbmcgui.Dialog().input(setting.label or T(35079, 'Enter value'),
+                                            str(setting.get()), xbmcgui.INPUT_STRING)
         if result is None:
             return
         elif result == -1:

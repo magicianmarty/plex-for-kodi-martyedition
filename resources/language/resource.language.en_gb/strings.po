@@ -3356,3 +3356,151 @@ msgstr ""
 msgctxt "#35049"
 msgid "Local mode reaches your server over plain HTTP, so \"Allow Insecure Connections\" has been set to \"Always\".\n\nYour server needs the matching setting: in Plex under Settings > Network, \"Secure connections\" has to be \"Preferred\" - with \"Required\" the server refuses these connections."
 msgstr ""
+
+msgctxt "#35050"
+msgid "Scanning {0}"
+msgstr ""
+
+msgctxt "#35051"
+msgid "Could not start the scan"
+msgstr ""
+
+msgctxt "#35052"
+msgid "Downloading"
+msgstr ""
+
+msgctxt "#35053"
+msgid "Importing"
+msgstr ""
+
+msgctxt "#35054"
+msgid "Queued"
+msgstr ""
+
+msgctxt "#35055"
+msgid "Stalled"
+msgstr ""
+
+msgctxt "#35056"
+msgid "Paused"
+msgstr ""
+
+msgctxt "#35057"
+msgid "Failed"
+msgstr ""
+
+msgctxt "#35058"
+msgid "Done"
+msgstr ""
+
+msgctxt "#35059"
+msgid "Downloads"
+msgstr ""
+
+msgctxt "#35060"
+msgid "No download services configured"
+msgstr ""
+
+msgctxt "#35061"
+msgid "Not answering: {0}"
+msgstr ""
+
+msgctxt "#35062"
+msgid "{0} active"
+msgstr ""
+
+msgctxt "#35063"
+msgid "Nothing downloading"
+msgstr ""
+
+msgctxt "#35064"
+msgid "Refreshing"
+msgstr ""
+
+msgctxt "#35065"
+msgid "Downloads and services"
+msgstr ""
+
+msgctxt "#35066"
+msgid "Sonarr address"
+msgstr ""
+
+msgctxt "#35067"
+msgid "Sonarr API key"
+msgstr ""
+
+msgctxt "#35068"
+msgid "Radarr address"
+msgstr ""
+
+msgctxt "#35069"
+msgid "Radarr API key"
+msgstr ""
+
+msgctxt "#35070"
+msgid "qBittorrent address"
+msgstr ""
+
+msgctxt "#35071"
+msgid "qBittorrent username"
+msgstr ""
+
+msgctxt "#35072"
+msgid "qBittorrent password"
+msgstr ""
+
+msgctxt "#35073"
+msgid "Find services on my network"
+msgstr ""
+
+msgctxt "#35074"
+msgid "Found: {0}"
+msgstr ""
+
+msgctxt "#35075"
+msgid "No services found"
+msgstr ""
+
+msgctxt "#35076"
+msgid "Entering keys with a remote is miserable. Drop a downloads.json into the add-on's profile directory instead - see the README - and these fields stay empty."
+msgstr ""
+
+msgctxt "#35077"
+msgid "{0} finished downloading"
+msgstr ""
+
+msgctxt "#35078"
+msgid "Scan the Plex library when a download finishes"
+msgstr ""
+
+msgctxt "#35079"
+msgid "Enter value"
+msgstr ""
+
+msgctxt "#35080"
+msgid "New in your library"
+msgstr ""
+
+msgctxt "#35081"
+msgid "Refresh the library as soon as the server changes it"
+msgstr ""
+
+msgctxt "#35082"
+msgid "Say when a download finishes"
+msgstr ""
+
+msgctxt "#35083"
+msgid "Scan libraries"
+msgstr ""
+
+msgctxt "#35084"
+msgid "Downloading"
+msgstr ""
+
+msgctxt "#35085"
+msgid "Show format badges on library tiles"
+msgstr ""
+
+msgctxt "#35086"
+msgid "Dolby Vision (with its profile), Atmos, DTS:X, HDR, resolution and channel layout, shown on the artwork. Dolby Vision and HDR cost one request per library when it is opened; everything else is already in the listing."
+msgstr ""

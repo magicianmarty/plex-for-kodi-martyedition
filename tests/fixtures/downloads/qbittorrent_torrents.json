@@ -1,0 +1,8 @@
+[
+  {"hash": "abc123", "name": "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV", "progress": 0.5,
+   "size": 64424509440, "eta": 2700, "state": "downloading", "category": "radarr", "dlspeed": 24000000},
+  {"hash": "def456", "name": "Some.Linux.ISO", "progress": 0.02, "size": 4294967296,
+   "eta": 8640000, "state": "stalledDL", "category": "", "dlspeed": 0},
+  {"hash": "ghi789", "name": "Paused.Thing", "progress": 0.8, "size": 1073741824,
+   "eta": 8640000, "state": "pausedDL", "category": "", "dlspeed": 0}
+]

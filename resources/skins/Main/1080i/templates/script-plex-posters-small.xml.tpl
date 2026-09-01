@@ -113,7 +113,8 @@
                                 <colordiffuse>FFCC7B19</colordiffuse>
                             </control>
                         </control>
-                        {% include "includes/watched_indicator.xml.tpl" with xoff=144 & uw_size=29 & with_count=True & scale="small" %}
+                        {% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=0 & chip_w=48 & chip_h=18 & chip_slots=2 & chip_font="font10" %}
+{% include "includes/watched_indicator.xml.tpl" with xoff=144 & uw_size=29 & with_count=True & scale="small" %}
                         <control type="label">
                             <visible>String.IsEmpty(ListItem.Property(subtitle)) + !String.IsEmpty(ListItem.Property(year))</visible>
                             <scroll>false</scroll>
@@ -211,7 +212,8 @@
                                     <colordiffuse>FFCC7B19</colordiffuse>
                                 </control>
                             </control>
-                            {% include "includes/watched_indicator.xml.tpl" with xoff=144 & uw_size=29 & with_count=True & scale="small" %}
+                            {% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=0 & chip_w=48 & chip_h=18 & chip_slots=2 & chip_font="font10" %}
+{% include "includes/watched_indicator.xml.tpl" with xoff=144 & uw_size=29 & with_count=True & scale="small" %}
                             <control type="label">
                                 <visible>String.IsEmpty(ListItem.Property(subtitle)) + !String.IsEmpty(ListItem.Property(year))</visible>
                                 <scroll>true</scroll>

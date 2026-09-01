@@ -1,0 +1,405 @@
+# coding=utf-8
+"""
+The Downloads window: what the stack still owes you.
+
+Polling happens on a background thread and the window only ever draws from the
+last snapshot, so a slow or dead service costs a redraw, never the UI thread.
+"""
+
+from __future__ import absolute_import
+
+import time
+
+from kodi_six import xbmc
+from kodi_six import xbmcgui
+
+from plexnet import plexapp
+
+from lib import backgroundthread
+from lib import util
+from lib.downloads import discovery, model
+from lib.downloads.config import DownloadsConfig
+from lib.downloads.manager import DownloadsManager
+from lib.i18n import T
+
+from . import kodigui
+from . import windowutils
+
+STATE_COLOURS = {
+    model.DOWNLOADING: "FFE5A00D",
+    model.IMPORTING: "FF5CD05C",
+    model.STALLED: "FFCC7B19",
+    model.FAILED: "FFE54B4B",
+}
+DEFAULT_STATE_COLOUR = "FFB4B4B4"
+
+STATE_LABELS = {
+    model.DOWNLOADING: (35052, "Downloading"),
+    model.IMPORTING: (35053, "Importing"),
+    model.QUEUED: (35054, "Queued"),
+    model.STALLED: (35055, "Stalled"),
+    model.PAUSED: (35056, "Paused"),
+    model.FAILED: (35057, "Failed"),
+    model.DONE: (35058, "Done"),
+}
+
+REFRESH_SECONDS = 20
+
+# The home screen polls at this interval so the notification about a finished
+# grab arrives while you are sitting in front of it, not on next open.
+AMBIENT_SECONDS = 60
+
+MANAGER = None
+_lastAmbient = 0
+
+
+def manager():
+    """One manager for the whole add-on: two of them would poll twice and
+    notify twice about the same finished download."""
+    global MANAGER
+    if MANAGER is None:
+        MANAGER = DownloadsManager()
+    return MANAGER
+
+
+def reset():
+    global MANAGER
+    MANAGER = None
+
+
+class RefreshTask(backgroundthread.Task):
+    def setup(self, manager, callback):
+        self.manager = manager
+        self.callback = callback
+        return self
+
+    def run(self):
+        if self.isCanceled():
+            return
+        snapshot = self.manager.refresh()
+        if not self.isCanceled():
+            self.callback(snapshot)
+
+
+class DiscoveryTask(backgroundthread.Task):
+    def setup(self, config, callback):
+        self.config = config
+        self.callback = callback
+        return self
+
+    def run(self):
+        if self.isCanceled():
+            return
+        server = getattr(plexapp.SERVERMANAGER, "selectedServer", None)
+        found = discovery.discover(server)
+        if found:
+            self.config.remember(found)
+        if not self.isCanceled():
+            self.callback(found)
+
+
+def announce(finished):
+    """
+    Tell the user what landed, and optionally point Plex at it.
+
+    Two rules, both learned the hard way: only things the service actually
+    imported get announced, and nothing interrupts playback - a popup over a
+    film is worse than finding out afterwards.
+    """
+    if not finished or not util.getSetting("downloads_notify", True):
+        return
+    if xbmc.getCondVisibility("Player.HasVideo"):
+        util.DEBUG_LOG("Downloads: {0} finished, not announcing over playback", len(finished))
+        return
+
+    for item in finished[:3]:
+        util.showNotification(T(35077, "{0} finished downloading").format(item.title),
+                              header=T(35059, "Downloads"))
+    if not util.getSetting("downloads_scan_on_finish", False):
+        return
+
+    types = set(item.section_type for item in finished if item.section_type)
+    if not types:
+        return
+    server = getattr(plexapp.SERVERMANAGER, "selectedServer", None)
+    if not server or not getattr(server, "owned", False):
+        return
+    for section in server.library.sections():
+        if getattr(section, "TYPE", None) in types:
+            try:
+                section.refresh()
+            except Exception:
+                util.ERROR("downloads: scan after finish failed")
+
+
+def tick(force=False):
+    """
+    Called from the home screen's cron. Polls at most every AMBIENT_SECONDS and
+    only when something is configured, so an unused feature costs nothing.
+    """
+    global _lastAmbient
+    # Runs on the cron thread that drives the whole home screen: whatever goes
+    # wrong in here must not stop the rest of it ticking.
+    try:
+        mgr = manager()
+        if not mgr.configured():
+            return False
+        if not force and time.time() - _lastAmbient < AMBIENT_SECONDS:
+            return False
+        _lastAmbient = time.time()
+        backgroundthread.BGThreader.addTask(AmbientTask().setup(mgr))
+        return True
+    except Exception:
+        util.ERROR("downloads: ambient poll failed")
+        return False
+
+
+class AmbientTask(backgroundthread.Task):
+    def setup(self, mgr):
+        self.mgr = mgr
+        return self
+
+    def run(self):
+        if self.isCanceled():
+            return
+        snapshot = self.mgr.refresh()
+        finished = self.mgr.finished()
+        count, percent = snapshot.summary()
+        util.setGlobalProperty("downloads.count", count and str(count) or "")
+        util.setGlobalProperty("downloads.percent", count and str(percent) or "")
+        announce(finished)
+        plexapp.util.APP.trigger("downloads:updated", count=count)
+
+
+class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
+    xmlFile = 'script-plex-downloads.xml'
+    path = util.ADDON.getAddonInfo('path')
+    theme = 'Main'
+    res = '1080i'
+    width = 1920
+    height = 1080
+
+    LIST_ID = 101
+    OPTIONS_GROUP_ID = 200
+    HOME_BUTTON_ID = 201
+    REFRESH_BUTTON_ID = 203
+    PLAYER_STATUS_BUTTON_ID = 204
+    SCAN_BUTTON_ID = 205
+
+    def __init__(self, *args, **kwargs):
+        kodigui.ControlledWindow.__init__(self, *args, **kwargs)
+        self.manager = kwargs.get('manager') or manager()
+        self.exitCommand = None
+        self.lastRefresh = 0
+        self.task = None
+
+    def onFirstInit(self):
+        self.listControl = kodigui.ManagedControlList(self, self.LIST_ID, 10)
+        self.setProperty('heading', T(35059, "Downloads"))
+        self.draw(self.manager.snapshot)
+        self.refresh(force=True)
+        self.focusBest()
+
+    def focusBest(self):
+        """
+        Focus something that exists.
+
+        The list is hidden while it is empty, and a window whose focus lands on
+        a hidden control backs straight out again - which is exactly what
+        happened on the first open, before any poll had filled the cache.
+        """
+        if self.listControl.size():
+            self.setFocusId(self.LIST_ID)
+        else:
+            self.setFocusId(self.SCAN_BUTTON_ID)
+
+    def onAction(self, action):
+        try:
+            if time.time() - self.lastRefresh > REFRESH_SECONDS:
+                self.refresh()
+        except Exception:
+            util.ERROR()
+        kodigui.ControlledWindow.onAction(self, action)
+
+    def onClick(self, controlID):
+        if controlID == self.HOME_BUTTON_ID:
+            self.goHome()
+        elif controlID == self.REFRESH_BUTTON_ID:
+            self.refresh(force=True)
+        elif controlID == self.SCAN_BUTTON_ID:
+            self.scanLibraries()
+        elif controlID == self.PLAYER_STATUS_BUTTON_ID:
+            self.showAudioPlayer()
+
+    def onClosed(self):
+        if self.task:
+            self.task.cancel()
+
+    def refresh(self, force=False):
+        if not self.manager.configured():
+            self.discover()
+            return
+        if self.task and not self.task.isValid():
+            self.task = None
+        if self.task and not force:
+            return
+
+        self.lastRefresh = time.time()
+        self.setBoolProperty('refreshing', True)
+        self.task = RefreshTask().setup(self.manager, self.onRefreshed)
+        backgroundthread.BGThreader.addTask(self.task)
+
+    def onRefreshed(self, snapshot):
+        self.task = None
+        self.setBoolProperty('refreshing', False)
+        announce(self.manager.finished())
+        had = self.listControl.size()
+        self.draw(snapshot)
+        # First rows to arrive: move focus onto them, since it is parked on the
+        # action row while there is nothing to look at.
+        if not had and self.listControl.size():
+            self.focusBest()
+
+    def discover(self):
+        """
+        Nothing configured: go and look, rather than sending someone to a
+        settings screen to type an address with a remote.
+        """
+        self.drawEmpty(T(35064, "Refreshing"))
+        self.setBoolProperty('refreshing', True)
+        self.task = DiscoveryTask().setup(DownloadsConfig(), self.onDiscovered)
+        backgroundthread.BGThreader.addTask(self.task)
+
+    def onDiscovered(self, found):
+        self.task = None
+        self.setBoolProperty('refreshing', False)
+        reset()
+        self.manager = manager()
+        if not found:
+            self.drawEmpty(T(35075, "No services found"))
+            return
+        util.showNotification(T(35074, "Found: {0}").format(", ".join(sorted(found))),
+                              header=T(35059, "Downloads"))
+        if self.manager.configured():
+            self.refresh(force=True)
+        else:
+            # Found them, but they still want a key we do not have.
+            self.drawEmpty(T(35074, "Found: {0}").format(", ".join(sorted(found))))
+
+    def scanLibraries(self):
+        """
+        Ask Plex to look for new files in every video library you own. The same
+        action as the one in a library's own menu, but here it needs no menu
+        dive - this is the screen you are on when you are waiting for something
+        to show up.
+        """
+        server = getattr(plexapp.SERVERMANAGER, "selectedServer", None)
+        if not server or not getattr(server, "owned", False):
+            util.showNotification(T(35060, "No download services configured"),
+                                  header=T(33082, "Scan Library Files"))
+            return
+
+        scanned = []
+        for section in server.library.sections():
+            if getattr(section, "TYPE", None) not in ("movie", "show", "movies_shows"):
+                continue
+            try:
+                section.refresh()
+                scanned.append(section.title)
+            except Exception:
+                util.ERROR("Downloads: scan failed for {0}".format(section.key))
+
+        util.showNotification(T(35050, "Scanning {0}").format(", ".join(scanned) or "-"),
+                              header=T(33082, "Scan Library Files"))
+
+    def draw(self, snapshot):
+        items = [self.createListItem(item) for item in snapshot.items]
+        self.listControl.replaceItems(items)
+        self.setBoolProperty('no.content', not items)
+
+        count, percent = snapshot.summary()
+        self.setProperty('summary.count', count and str(count) or '')
+        self.setProperty('summary.percent', count and "{0}%".format(percent) or '')
+
+        if snapshot.errors:
+            self.setProperty('status', T(35061, "Not answering: {0}").format(
+                ", ".join(sorted(snapshot.errors))))
+        elif snapshot.updated:
+            self.setProperty('status', self.summaryLine(snapshot) if count
+                             else T(35063, "Nothing downloading"))
+        if not items and not snapshot.errors and snapshot.updated:
+            self.drawEmpty(T(35063, "Nothing downloading"))
+
+    @staticmethod
+    def detailLine(item):
+        """
+        The one line under the state. Percent and ETA while it moves, size when
+        it does not - a paused item showing "0s left" is worse than silence.
+        """
+        parts = []
+        if item.state in (model.DOWNLOADING, model.STALLED):
+            parts.append("{0}%".format(item.percent))
+            if item.etaDisplay():
+                parts.append(item.etaDisplay())
+        if item.sizeDisplay():
+            parts.append(item.sizeDisplay())
+        return "  ·  ".join(parts)
+
+    @staticmethod
+    def summaryLine(snapshot):
+        """e.g. "3 downloading - 2 importing - 47%"."""
+        parts = []
+        for state, (ident, default) in ((model.DOWNLOADING, STATE_LABELS[model.DOWNLOADING]),
+                                        (model.IMPORTING, STATE_LABELS[model.IMPORTING]),
+                                        (model.QUEUED, STATE_LABELS[model.QUEUED]),
+                                        (model.FAILED, STATE_LABELS[model.FAILED])):
+            hits = [i for i in snapshot.active if i.state == state]
+            if hits:
+                parts.append("{0} {1}".format(len(hits), T(ident, default).lower()))
+        _count, percent = snapshot.summary()
+        if percent:
+            parts.append("{0}%".format(percent))
+        return "  -  ".join(parts)
+
+    def drawEmpty(self, message):
+        self.listControl.reset()
+        self.setBoolProperty('no.content', True)
+        self.setProperty('status', message)
+
+    def createListItem(self, item):
+        state_id, state_default = STATE_LABELS.get(item.state, STATE_LABELS[model.QUEUED])
+        mli = kodigui.ManagedListItem(
+            item.title,
+            item.subtitle,
+            thumbnailImage=item.poster or '',
+            data_source=item,
+        )
+        mli.setProperty('thumb.fallback',
+                        'script.plex/thumb_fallbacks/{0}.png'.format(
+                            'show' if item.section_type == 'show' else 'movie'))
+        mli.setProperty('state', T(state_id, state_default))
+        mli.setProperty('state.key', item.state)
+        mli.setProperty('state.colour', STATE_COLOURS.get(item.state, DEFAULT_STATE_COLOUR))
+        mli.setProperty('percent', str(item.percent))
+        mli.setProperty('percent.display', "{0}%".format(item.percent))
+        mli.setProperty('source', item.source)
+        mli.setProperty('detail', self.detailLine(item))
+        mli.setProperty('message', item.message or '')
+        # The bar is only meaningful while something is actually moving.
+        mli.setProperty('has.progress', item.state in (model.DOWNLOADING, model.STALLED,
+                                                       model.PAUSED) and '1' or '')
+        return mli
+
+
+def show(parent=None, manager=None):
+    window = DownloadsWindow.open(manager=manager)
+    del window
+
+
+def configured():
+    """Cheap enough to ask before offering the menu entry."""
+    try:
+        return bool(DownloadsConfig().clients())
+    except Exception:
+        util.ERROR("downloads: could not read configuration")
+        return False
