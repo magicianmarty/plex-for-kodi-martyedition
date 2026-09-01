@@ -54,11 +54,58 @@ class ArrClient(object):
             "includeUnknownSeriesItems": "true" if self.flavour == SONARR else None,
             "includeUnknownMovieItems": "true" if self.flavour == RADARR else None,
             "includeSeries": "true" if self.flavour == SONARR else None,
+            # Without this the records carry episode ids and no episode, and
+            # every row falls back to naming itself after the release file.
+            "includeEpisode": "true" if self.flavour == SONARR else None,
             "includeMovie": "true" if self.flavour == RADARR else None,
         }
         params = dict((k, v) for k, v in params.items() if v is not None)
         data = self.http.request("/api/v3/queue", params=params)
-        return [self._download(record) for record in self._records(data)]
+        return self._grouped(self._records(data))
+
+    def _grouped(self, records):
+        """
+        One row per grab, not per episode.
+
+        A season pack arrives as one queue record per episode - ten identical
+        rows, same release, same size, same progress - which turns the screen
+        into a wall. They share a downloadId, which is the grab they came from.
+        """
+        order = []
+        groups = {}
+        for record in records:
+            key = record.get("downloadId") or "id:{0}".format(record.get("id"))
+            if key not in groups:
+                order.append(key)
+                groups[key] = []
+            groups[key].append(record)
+
+        rows = []
+        for key in order:
+            members = groups[key]
+            row = self._download(members[0])
+            if len(members) > 1:
+                row.count = len(members)
+                row.subtitle = self._packSubtitle(members)
+                # The furthest from finished is the honest headline: a pack
+                # with two episodes still downloading is not "importing".
+                row.state = max((self._download(m).state for m in members),
+                                key=lambda st: model.STATE_ORDER.get(st, 9))
+                row.progress = min(self._download(m).progress for m in members)
+                etas = [self._download(m).eta for m in members if self._download(m).eta]
+                row.eta = max(etas) if etas else None
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _packSubtitle(members):
+        seasons = sorted({(m.get("episode") or {}).get("seasonNumber")
+                          for m in members if m.get("episode")} - {None})
+        count = "{0} episodes".format(len(members))
+        if len(seasons) == 1:
+            return "Season {0}  -  {1}".format(seasons[0], count)
+        quality = ((members[0].get("quality") or {}).get("quality") or {}).get("name")
+        return "{0}  -  {1}".format(quality, count) if quality else count
 
     def history(self, since=None):
         """
@@ -154,11 +201,17 @@ class ArrClient(object):
                                                      episode.get("episodeNumber") or 0)
                 if episode.get("title"):
                     subtitle = "{0} - {1}".format(subtitle, episode["title"])
-            return series["title"], subtitle or release
+            # The release name is the last resort, not the second: it is
+            # unreadable from a sofa.
+            return series["title"], subtitle or self._quality(record) or release
         if movie.get("title"):
             year = movie.get("year")
             return movie["title"], str(year) if year else release
         return release or "Unknown", ""
+
+    @staticmethod
+    def _quality(record):
+        return ((record.get("quality") or {}).get("quality") or {}).get("name") or ""
 
     @staticmethod
     def _state(record):

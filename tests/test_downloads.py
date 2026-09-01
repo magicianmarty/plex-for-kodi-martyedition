@@ -109,7 +109,26 @@ class SonarrQueueTest(KodiTestCase):
         return [item for item in self.items if item.title == title][0]
 
     def test_the_queue_is_read(self):
-        self.assertEqual(4, len(self.items))
+        """Seven records, but three of them are one grab: four rows."""
+        self.assertEqual(5, len(self.items))
+
+    def test_a_season_pack_is_one_row_not_one_per_episode(self):
+        """
+        Sonarr sends a pack as one record per episode - same release, same
+        size, same progress - which put ten identical rows on the screen.
+        """
+        pack = self.byTitle("Band of Brothers")
+        self.assertEqual(3, pack.count)
+        self.assertEqual("Season 1  -  3 episodes", pack.subtitle)
+
+    def test_a_pack_is_only_as_finished_as_its_least_finished_episode(self):
+        pack = self.byTitle("Band of Brothers")
+        self.assertEqual(model.DOWNLOADING, pack.state)
+        self.assertEqual(0, pack.percent)
+        self.assertEqual("4h", pack.etaDisplay())
+
+    def test_a_lone_record_is_left_alone(self):
+        self.assertEqual(1, self.byTitle("Andor").count)
 
     def test_an_episode_is_named_by_what_it_is_not_by_its_release(self):
         """'Andor.S02E03.2160p.WEB-DL.DV.HDR.x265' is unreadable across a room."""
@@ -161,13 +180,14 @@ class SonarrQueueTest(KodiTestCase):
         _method, path, params = self.client.http.requests[0]
         self.assertEqual("/api/v3/queue", path)
         self.assertEqual("true", params["includeSeries"])
+        self.assertEqual("true", params["includeEpisode"])
         self.assertEqual("true", params["includeUnknownSeriesItems"])
 
     def test_a_bare_list_still_parses(self):
         """Sonarr v3 answered with a list; v4 paginates. Both are in the wild."""
         records = fixture("sonarr_queue.json")["records"]
         client = sonarr({"/api/v3/queue": records})
-        self.assertEqual(4, len(client.queue()))
+        self.assertEqual(5, len(client.queue()))
 
     def test_keys_are_stable_across_polls(self):
         again = sonarr({"/api/v3/queue": fixture("sonarr_queue.json")}).queue()
@@ -318,7 +338,7 @@ class ManagerTest(KodiTestCase):
                            radarr({"/api/v3/queue": fixture("radarr_queue.json")}))
         snapshot = mgr.refresh()
 
-        self.assertEqual(5, len(snapshot.items))
+        self.assertEqual(6, len(snapshot.items))
         # Importing first, then downloading, then queued, then failed.
         self.assertEqual(model.IMPORTING, snapshot.items[0].state)
         self.assertEqual(model.FAILED, snapshot.items[-1].state)
@@ -335,7 +355,7 @@ class ManagerTest(KodiTestCase):
         working.http.raises = ServiceError("unreachable")
         snapshot = mgr.refresh()
 
-        self.assertEqual(4, len(snapshot.items))
+        self.assertEqual(5, len(snapshot.items))
         self.assertTrue(snapshot.stale)
         self.assertIn(SONARR, snapshot.errors)
 

@@ -93,6 +93,8 @@ class Download(object):
         # the Plex library it belongs to.
         self.section_type = section_type
         self.poster = poster
+        # How many queue records this row stands for: a season pack is many.
+        self.count = 1
         # ISO timestamp for history entries; None for anything still in flight.
         self.at = at
 
