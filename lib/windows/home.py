@@ -18,6 +18,7 @@ from lib.path_mapping import pmm
 from lib.plex_hosts import pdm
 from lib.util import T
 from . import busy
+from . import downloads
 from . import dropdown
 from . import kodigui
 from . import opener
@@ -2407,6 +2408,8 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
             util.DEBUG_LOG("Home: Not ticking, shutdown flag set")
             return
 
+        downloads.tick()
+
         if self.movingSection:
             util.DEBUG_LOG("Home: Not ticking, currently moving a section")
             return
@@ -3158,6 +3161,8 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
                 options.append(dropdown.SEPARATOR)
             options.append({'key': 'manage_hubs', 'display': T(34080, "Manage Hubs")})
             options.append({'key': 'refresh_hubs', 'display': T(34096, "Refresh Hubs")})
+            if downloads.configured():
+                options.append({'key': 'downloads', 'display': T(35059, "Downloads")})
 
             if options:
                 choice = dropdown.showDropdown(
@@ -3269,6 +3274,9 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
                 return self.lastSection
         elif choice["key"] == "refresh":
             self.scanLibrary(section)
+            return self.lastSection
+        elif choice["key"] == "downloads":
+            downloads.show()
             return self.lastSection
         elif choice["key"] == "emptyTrash":
             button = optionsdialog.show(

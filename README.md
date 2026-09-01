@@ -57,6 +57,7 @@ changes follow from that.
 | **Filters named like the format** | The dropdown says "Dolby Vision" rather than `DOVI`, and gained a "Dolby Atmos" entry — the server advertises that filter, upstream just had no label for it. |
 | **Seek OSD crash fix** | `updateProgress()` divided by an offset that is `None` until the first playback tick lands, which killed the seek OSD for the rest of the session with a `TypeError`. Now guarded the way `trueOffset()` already was. |
 | **Kodi 22 (Piers) support** | Kodi 22 ships Python 3.14, which drops modules the add-on's vendored packages still reached for. The vendored Python 2 `typing` backport is gone (it sat ahead of the stdlib on `sys.path`), `datetime.utcnow()` is replaced without changing what existing caches compare against, and `pkg_resources` is now optional. `addon.xml` needs nothing: Kodi 22 offers `xbmc.python` 3.1.0, a minor bump over the 3.0.0 we require. |
+| **Downloads from the couch** | A Downloads screen showing what Sonarr, Radarr and qBittorrent are working on: progress, ETA, and — the bit that matters — whether a finished grab has actually been imported into Plex yet. Reachable from the library and home Options menus, with an optional notification when something lands. Nothing is typed on the remote: it finds the services on your network, and the credentials come from a file you drop in once. |
 | **Tests and CI** | The suite runs on every push and pull request across Python 3.8 (Kodi 19/20), 3.11 (Kodi 21) and 3.14 (Kodi 22) plus Windows, the add-on is byte-compiled against Kodi 19's Python, and an installable zip is built and checked on every run. |
 
 ## Install
@@ -70,6 +71,14 @@ This edition is **not** in any Kodi repository — install the zip by hand.
      if you want current `main`.
 2. In Kodi: **Settings → Add-ons → Install from zip file**, and pick it.
 3. Launch **Plex** from Programs / Video add-ons.
+
+[`scripts/deploy-to-kodi.sh`](scripts/deploy-to-kodi.sh) does the whole thing
+against a box you can SSH into — build, stop Kodi, swap the add-on (keeping the
+previous build next to it), start Kodi:
+
+```sh
+./scripts/deploy-to-kodi.sh root@kodi-box
+```
 
 Building one yourself is exactly what CI does:
 
@@ -91,6 +100,38 @@ same move in reverse — install pannal's zip over this one.
 `pannal/plex-for-kodi`, so left alone it will eventually offer, and install,
 upstream over the top of this build. In the add-on's own settings:
 **System → Check for updates**, off.
+
+### Downloads: pointing it at your stack
+
+The Downloads screen needs to know where Sonarr, Radarr and qBittorrent are.
+Addresses it can find on its own — all three answer an unauthenticated probe, so
+opening the screen with nothing configured makes it look on your network and
+remember what it finds. Credentials it cannot guess.
+
+An API key is 32 hex characters and entering one with a d-pad is miserable, so
+the add-on reads `downloads.json` from its profile directory
+(`userdata/addon_data/script.plexmod/`) and treats the settings screen as an
+override for anyone without a shell:
+
+```json
+{
+  "sonarr":      {"url": "http://media-host:8989", "key": "..."},
+  "radarr":      {"url": "http://media-host:7878", "key": "..."},
+  "qbittorrent": {"url": "http://media-host:8080", "user": "...", "pass": "..."}
+}
+```
+
+[`scripts/provision-downloads.sh`](scripts/provision-downloads.sh) writes that
+file for you — it reads the keys off the media server and drops the JSON onto
+the Kodi box, so setup is one command and survives a reinstall:
+
+```sh
+./scripts/provision-downloads.sh root@kodi-box root@media-host [qbt-user] [qbt-pass]
+```
+
+Any service can be left out, or switched off with `"enabled": false` while
+keeping its credentials. The file holds secrets in plain text, exactly as Kodi's
+own settings store does — `chmod 600`, and don't put it on a shared box.
 
 ### Installing to a read-only location
 

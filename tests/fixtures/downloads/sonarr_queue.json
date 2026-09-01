@@ -1,0 +1,25 @@
+{
+  "page": 1, "pageSize": 100, "totalRecords": 4,
+  "records": [
+    {"id": 11, "downloadId": "AAA", "size": 8589934592.0, "sizeleft": 2147483648.0,
+     "timeleft": "00:12:34", "status": "downloading", "trackedDownloadStatus": "ok",
+     "trackedDownloadState": "downloading", "title": "Andor.S02E03.2160p.WEB-DL.DV.HDR.x265",
+     "series": {"id": 3, "title": "Andor"},
+     "episode": {"seasonNumber": 2, "episodeNumber": 3, "title": "Harvest"}},
+    {"id": 12, "downloadId": "BBB", "size": 4294967296.0, "sizeleft": 0.0,
+     "timeleft": null, "status": "completed", "trackedDownloadStatus": "ok",
+     "trackedDownloadState": "importPending", "title": "Severance.S02E10.1080p",
+     "series": {"id": 4, "title": "Severance"},
+     "episode": {"seasonNumber": 2, "episodeNumber": 10, "title": "Cold Harbor"}},
+    {"id": 13, "downloadId": "CCC", "size": 1073741824.0, "sizeleft": 1073741824.0,
+     "timeleft": "1.02:03:04", "status": "queued", "trackedDownloadStatus": "ok",
+     "trackedDownloadState": "downloading", "title": "Foundation.S03E01",
+     "series": {"id": 5, "title": "Foundation"},
+     "episode": {"seasonNumber": 3, "episodeNumber": 1, "title": ""}},
+    {"id": 14, "downloadId": "DDD", "size": 2147483648.0, "sizeleft": 1073741824.0,
+     "status": "downloading", "trackedDownloadStatus": "error",
+     "trackedDownloadState": "downloading", "title": "Unknown.Release.1080p",
+     "errorMessage": "No files found are eligible for import",
+     "statusMessages": [{"title": "x", "messages": ["fallback message"]}]}
+  ]
+}

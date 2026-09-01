@@ -113,7 +113,10 @@ class TemplateEngine(object):
             return False
 
         leeway = 50
-        expected_len = len(data)
+        # Bytes, not characters: st_size() counts what UTF-8 actually wrote, so a
+        # single non-ASCII character in a template made this comparison never
+        # come true - 5s of retries, then a failed render of that window.
+        expected_len = len(data.encode("utf-8"))
         # write final file
         count = 0
         fn = os.path.join(self.target_dir, "script-plex-{}.xml".format(template))
