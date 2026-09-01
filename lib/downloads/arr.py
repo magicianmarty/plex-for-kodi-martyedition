@@ -126,6 +126,7 @@ class ArrClient(object):
             row = self._download(members[0])
             if len(members) > 1:
                 row.count = len(members)
+                row.service_ids = [m.get("id") for m in members if m.get("id")]
                 row.subtitle = self._packSubtitle(members)
                 # The furthest from finished is the honest headline: a pack
                 # with two episodes still downloading is not "importing".
@@ -195,15 +196,21 @@ class ArrClient(object):
         skipRedownload rides along with blocklist=False so removing something
         does not immediately fetch it again.
         """
-        if not getattr(download, "service_id", None):
+        ids = getattr(download, "service_ids", None) or (
+            [download.service_id] if getattr(download, "service_id", None) else [])
+        if not ids:
             raise ServiceError("nothing to remove")
+
         params = {
             "removeFromClient": "true" if from_client else "false",
             "blocklist": "true" if blocklist else "false",
             "skipRedownload": "false" if blocklist else "true",
         }
-        self.http.request("/api/v3/queue/{0}".format(download.service_id),
-                          method="delete", expect_json=False, params=params)
+        # Every record behind the row, not just the first: one row can be a
+        # ten-episode pack, and removing one of ten looks like nothing happened.
+        for queue_id in ids:
+            self.http.request("/api/v3/queue/{0}".format(queue_id),
+                              method="delete", expect_json=False, params=params)
         return True
 
     def searchAgain(self, download):

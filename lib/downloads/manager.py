@@ -60,6 +60,9 @@ class DownloadsManager(object):
         # announces a backlog of things that landed days ago.
         self._historySeen = {}
         self._finished = []
+        # Finished torrents are noise most of the time and the whole point the
+        # rest of the time, so it is a switch rather than a rule.
+        self.includeSeeding = False
 
     def clients(self):
         if self._clients is None:
@@ -122,12 +125,11 @@ class DownloadsManager(object):
         self._historySeen[name] = (max(dates) if dates else None) or since
         return [] if first else records
 
-    @staticmethod
-    def _poll(client):
+    def _poll(self, client):
         if isinstance(client, ArrClient):
             return client.queue()
         if isinstance(client, QbClient):
-            return client.torrents()
+            return client.torrents(include_finished=self.includeSeeding)
         return []
 
     def finished(self):

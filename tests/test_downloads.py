@@ -847,3 +847,76 @@ class SearchAsYouTypeTest(KodiTestCase):
         self.dialog._search()
         self.assertEqual([], self.dialog.candidates)
         self.assertTrue(self.drawn)
+
+
+class GroupedRemovalTest(KodiTestCase):
+    """
+    A season pack is one row over many queue records. Acting on the row has to
+    act on all of them, or nine of the ten stay behind and it looks like the
+    button did nothing.
+    """
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        self.client = sonarr({"/api/v3/queue": fixture("sonarr_queue.json")})
+        self.pack = [i for i in self.client.queue() if i.count > 1][0]
+
+    def test_a_pack_carries_every_record_behind_it(self):
+        self.assertEqual(3, self.pack.count)
+        self.assertEqual([101, 102, 103], self.pack.service_ids)
+
+    def test_removing_a_pack_removes_all_of_it(self):
+        self.client.http.requests = []
+        self.client.remove(self.pack)
+
+        deleted = [p for m, p, _ in self.client.http.requests if m == "delete"]
+        self.assertEqual(["/api/v3/queue/101", "/api/v3/queue/102", "/api/v3/queue/103"],
+                         deleted)
+
+    def test_a_single_row_still_removes_once(self):
+        single = [i for i in self.client.queue() if i.count == 1][0]
+        self.client.http.requests = []
+        self.client.remove(single)
+        self.assertEqual(1, len([m for m, _p, _ in self.client.http.requests if m == "delete"]))
+
+
+class SeedingViewTest(KodiTestCase):
+    """
+    Finished torrents are noise most of the time and the whole point the rest
+    of it - you cannot remove something from a screen that will not show it.
+    """
+
+    TORRENTS = [
+        {"hash": "a", "name": "Still going", "progress": 0.4, "state": "downloading"},
+        {"hash": "b", "name": "Done and seeding", "progress": 1.0, "state": "uploading"},
+        {"hash": "c", "name": "Queued to seed", "progress": 1.0, "state": "queuedUP"},
+        {"hash": "d", "name": "Broken", "progress": 1.0, "state": "missingFiles"},
+    ]
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        self.client = qbittorrent({"/api/v2/auth/login": "Ok.",
+                                   "/api/v2/torrents/info": self.TORRENTS})
+
+    def test_by_default_only_what_is_unfinished_or_broken_shows(self):
+        rows = self.client.torrents()
+        self.assertEqual(["Still going", "Broken"], [r.title for r in rows])
+        self.assertEqual(2, self.client.seeding)
+
+    def test_asking_for_them_shows_the_finished_ones_too(self):
+        rows = self.client.torrents(include_finished=True)
+        self.assertEqual(4, len(rows))
+        seeding = [r for r in rows if r.state == model.SEEDING]
+        self.assertEqual(["Done and seeding", "Queued to seed"], [r.title for r in seeding])
+
+    def test_a_seeding_row_can_still_be_acted_on(self):
+        rows = self.client.torrents(include_finished=True)
+        seeding = [r for r in rows if r.state == model.SEEDING][0]
+        self.assertEqual("b", seeding.service_id)
+
+    def test_the_manager_passes_the_switch_through(self):
+        mgr = DownloadsManager(config=_StubConfig([self.client]))
+        self.assertEqual(2, len(mgr.refresh().items))
+
+        mgr.includeSeeding = True
+        self.assertEqual(4, len(mgr.refresh().items))

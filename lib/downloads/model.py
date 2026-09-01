@@ -12,12 +12,14 @@ STALLED = "stalled"
 PAUSED = "paused"
 FAILED = "failed"
 DONE = "done"
+SEEDING = "seeding"
 
 # What belongs on screen: everything the stack still owes you.
 ACTIVE_STATES = (DOWNLOADING, IMPORTING, QUEUED, STALLED, PAUSED, FAILED)
 
 # The order rows are shown in - what is closest to landing goes on top.
-STATE_ORDER = {IMPORTING: 0, DOWNLOADING: 1, STALLED: 2, QUEUED: 3, PAUSED: 4, FAILED: 5, DONE: 6}
+STATE_ORDER = {IMPORTING: 0, DOWNLOADING: 1, STALLED: 2, QUEUED: 3, PAUSED: 4, FAILED: 5,
+               DONE: 6, SEEDING: 7}
 
 # qBittorrent's "no idea" eta, and its cousins elsewhere.
 UNKNOWN_ETA = 8640000
@@ -125,6 +127,9 @@ class Download(object):
         # The service's own ids: the queue record, and the series or movie it
         # belongs to. Without them a row can be looked at but not acted on.
         self.service_id = service_id
+        # A season pack is many queue records behind one row; acting on the row
+        # has to act on all of them or nine of the ten stay behind.
+        self.service_ids = [service_id] if service_id else []
         self.parent_id = parent_id
 
     @property

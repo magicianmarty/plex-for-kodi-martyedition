@@ -34,10 +34,12 @@ STATE_COLOURS = {
     model.IMPORTING: "FF5CD05C",
     model.STALLED: "FFCC7B19",
     model.FAILED: "FFE54B4B",
+    model.SEEDING: "FF7F9CC4",
 }
 DEFAULT_STATE_COLOUR = "FFB4B4B4"
 
 STATE_LABELS = {
+    model.SEEDING: (35117, "Seeding"),
     model.DOWNLOADING: (35052, "Downloading"),
     model.IMPORTING: (35053, "Importing"),
     model.QUEUED: (35054, "Queued"),
@@ -333,6 +335,7 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
     PLAYER_STATUS_BUTTON_ID = 204
     SCAN_BUTTON_ID = 205
     ADD_BUTTON_ID = 206
+    SEEDING_BUTTON_ID = 207
 
     def __init__(self, *args, **kwargs):
         kodigui.ControlledWindow.__init__(self, *args, **kwargs)
@@ -389,12 +392,15 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             return
 
         torrent = item.source == qbittorrent.QBITTORRENT
+        seeding = item.state == model.SEEDING
         options = []
-        if torrent:
+        if torrent and not seeding:
             # A torrent client has no notion of searching again; it has a tap.
             options.append({'key': 'pause', 'display': T(35105, "Pause")})
             options.append({'key': 'resume', 'display': T(35106, "Resume")})
-        options.append({'key': 'remove', 'display': T(35087, "Remove from queue")})
+        options.append({'key': 'remove',
+                        'display': T(35118, "Stop seeding and remove") if seeding
+                        else T(35087, "Remove from queue")})
         if not torrent:
             options.append({'key': 'blocklist',
                             'display': T(35088, "Remove and never take that release")})
@@ -420,6 +426,7 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
 
         blocklist = choice['key'] == 'blocklist'
         heading = (T(35088, "Remove and never take that release") if blocklist
+                   else T(35118, "Stop seeding and remove") if seeding
                    else T(35087, "Remove from queue"))
         # Say what happens to the files, because the answer is "nothing" and
         # people reasonably assume otherwise.
@@ -427,8 +434,11 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
                               T(32328, 'Yes'), T(32329, 'No')) != 0:
             return
 
-        self.runWrite(lambda i: client.remove(i, blocklist=blocklist), item,
-                      T(35092, "Removed {0}"))
+        if torrent:
+            self.runWrite(lambda i: client.remove(i), item, T(35092, "Removed {0}"))
+        else:
+            self.runWrite(lambda i: client.remove(i, blocklist=blocklist), item,
+                          T(35092, "Removed {0}"))
 
     def pickRelease(self, client, item):
         """
@@ -487,6 +497,8 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
             self.scanLibraries()
         elif controlID == self.ADD_BUTTON_ID:
             self.addSomething()
+        elif controlID == self.SEEDING_BUTTON_ID:
+            self.toggleSeeding()
         elif controlID == self.PLAYER_STATUS_BUTTON_ID:
             self.showAudioPlayer()
 
@@ -544,6 +556,16 @@ class DownloadsWindow(kodigui.ControlledWindow, windowutils.UtilMixin):
         else:
             # Found them, but they still want a key we do not have.
             self.drawEmpty(T(35074, "Found: {0}").format(", ".join(sorted(found))))
+
+    def toggleSeeding(self):
+        """
+        Show the finished torrents too. Off by default - a shelf of things that
+        have already arrived is not a to-do list - but they cannot be removed
+        from a screen that will not show them.
+        """
+        self.manager.includeSeeding = not self.manager.includeSeeding
+        self.setBoolProperty('seeding.shown', self.manager.includeSeeding)
+        self.refresh(force=True)
 
     def addSomething(self, term=None, candidates=None, service=None):
         """

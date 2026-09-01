@@ -3624,3 +3624,11 @@ msgstr ""
 msgctxt "#35116"
 msgid "{0} found"
 msgstr ""
+
+msgctxt "#35117"
+msgid "Seeding"
+msgstr ""
+
+msgctxt "#35118"
+msgid "Stop seeding and remove"
+msgstr ""

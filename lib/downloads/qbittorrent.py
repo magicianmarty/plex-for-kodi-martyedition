@@ -9,6 +9,9 @@ from .net import ServiceError, Session
 QBITTORRENT = "qbittorrent"
 
 # pausedDL became stoppedDL in qBittorrent 5; both spellings are live.
+SEEDING_STATES = ("uploading", "stalledup", "queuedup", "pausedup", "stoppedup",
+                  "forcedup", "checkingup")
+
 STATES = {
     "downloading": model.DOWNLOADING,
     "forceddl": model.DOWNLOADING,
@@ -60,7 +63,7 @@ class QbClient(object):
         self._authenticated = True
         return True
 
-    def torrents(self, filter="all"):
+    def torrents(self, filter="all", include_finished=False):
         try:
             data = self._torrents(filter)
         except ServiceError as e:
@@ -80,6 +83,11 @@ class QbClient(object):
             done = (record.get("progress") or 0) >= 1
             if done and state not in ("error", "missingfiles"):
                 seeding += 1
+                if not include_finished:
+                    continue
+                row = self._download(record)
+                row.state = model.SEEDING
+                rows.append(row)
                 continue
             rows.append(self._download(record))
         self.seeding = seeding
