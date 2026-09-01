@@ -79,38 +79,22 @@
         <label>$ADDON[script.plexmod 35064]</label>
     </control>
 
-    <control type="list" id="101">
+    <control type="panel" id="101">
         <visible>String.IsEmpty(Window.Property(no.content))</visible>
         <posx>70</posx>
         <posy>{{ vscale(64) }}</posy>
-        <width>1780</width>
-        <height>{{ vscale(820) }}</height>
+        <width>1790</width>
+        <height>{{ vscale(830) }}</height>
         <onleft>200</onleft>
         <onright>101</onright>
         <onup>210</onup>
         <ondown>101</ondown>
         <scrolltime tween="quadratic" easing="out">300</scrolltime>
-        <itemlayout height="{{ vscale(88) }}" width="1780">
-            <control type="image">
-                <posx>0</posx>
-                <posy>0</posy>
-                <width>1780</width>
-                <height>{{ vscale(80) }}</height>
-                <texture border="4">script.plex/white-square-rounded.png</texture>
-                <colordiffuse>20FFFFFF</colordiffuse>
-            </control>
-            {% include "includes/download_row.xml.tpl" %}
+        <itemlayout width="287" height="{{ vscale(430) }}">
+            {% include "includes/download_tile.xml.tpl" with tile_focus=False %}
         </itemlayout>
-        <focusedlayout height="{{ vscale(88) }}" width="1780">
-            <control type="image">
-                <posx>0</posx>
-                <posy>0</posy>
-                <width>1780</width>
-                <height>{{ vscale(80) }}</height>
-                <texture border="4">script.plex/white-square-rounded.png</texture>
-                <colordiffuse>50FFFFFF</colordiffuse>
-            </control>
-            {% include "includes/download_row.xml.tpl" %}
+        <focusedlayout width="287" height="{{ vscale(430) }}">
+            {% include "includes/download_tile.xml.tpl" with tile_focus=True %}
         </focusedlayout>
     </control>
 

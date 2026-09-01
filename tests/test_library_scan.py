@@ -390,8 +390,23 @@ class DownloadsHubTest(MixinTestCase):
         mli = window.createDownloadTile(self.tile(subtitle="Season 1", poster="http://art"))
 
         self.assertEqual("Masters of the Air", mli.label)
-        self.assertEqual("42", mli.getProperty("progress"))
         self.assertTrue(isinstance(mli.dataSource, self.home.DownloadTile))
+
+    def test_progress_is_a_texture_the_skin_can_draw(self):
+        """
+        The hub layout draws progress with <texture>ListItem.Property(progress)</texture>,
+        so a bare "42" renders nothing at all. Only even-numbered images ship.
+        """
+        window = self.home.HomeWindow.__new__(self.home.HomeWindow)
+        mli = window.createDownloadTile(self.tile(progress=0.43))
+
+        self.assertEqual("script.plex/progress/42.png", mli.getProperty("progress"))
+
+    def test_nothing_started_yet_gets_no_bar(self):
+        window = self.home.HomeWindow.__new__(self.home.HomeWindow)
+        mli = window.createDownloadTile(self.tile(progress=0.0))
+
+        self.assertEqual("", mli.getProperty("progress"))
 
 
 class BothWindowsShareItTest(KodiTestCase):

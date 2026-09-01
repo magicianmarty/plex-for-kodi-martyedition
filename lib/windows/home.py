@@ -4370,8 +4370,11 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
                                       data_source=DownloadTile(item))
         mli.setProperty('thumb.fallback', 'script.plex/thumb_fallbacks/{0}.png'.format(
             'show' if item.section_type == 'show' else 'movie'))
-        mli.setProperty('progress', str(item.percent))
-        mli.setBoolProperty('with.progress', item.percent > 0)
+        # The skin draws progress from a texture path, not a number - setting
+        # "42" here renders nothing at all. getProgressImage rounds to the
+        # even-numbered images that actually ship.
+        mli.setProperty('progress', util.getProgressImage(None, perc=item.percent))
+        mli.setProperty('state', item.state)
         return mli
 
     def onDownloadsUpdated(self, **kwargs):
