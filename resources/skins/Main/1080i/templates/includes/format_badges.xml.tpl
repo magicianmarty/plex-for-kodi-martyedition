@@ -21,12 +21,14 @@
         <colordiffuse>D8000000</colordiffuse>
     </control>
     <control type="label">
-        {# same trick the unwatched count uses: oversized font zoomed down, so
-           five characters still fit inside a chip this small #}
+        {# The unwatched count's trick, and the reason it widens the control:
+           Kodi truncates the text to the control's width *before* the zoom is
+           applied, so a chip-width label turns ATMOS into "AT...". Give it room
+           to lay the text out, then shrink it into the chip. #}
         <animation effect="zoom" start="70" end="70" time="0" reversible="false" center="auto" condition="true">Conditional</animation>
-        <posx>0</posx>
+        <posx>-{{ chip_w }}</posx>
         <posy>0</posy>
-        <width>{{ chip_w }}</width>
+        <width>{{ chip_w * 3 }}</width>
         <height>{{ chip_h|vscale }}</height>
         <font>{{ chip_font }}</font>
         <align>center</align>

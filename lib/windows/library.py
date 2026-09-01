@@ -1938,7 +1938,11 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
         # at fixed positions, so nothing has to be measured or reflowed.
         shown = badges.ordered(found)
         for slot in range(1, badges.MAX_SHOWN + 1):
-            label = badges.LABELS[shown[slot - 1]] if len(shown) >= slot else ''
+            if len(shown) < slot:
+                mli.setProperty('badge.{0}'.format(slot), '')
+                continue
+            badge = shown[slot - 1]
+            label = self.badges.label(badge, obj) if self.badges else badges.LABELS[badge]
             mli.setProperty('badge.{0}'.format(slot), label)
 
     def loadBadges(self):

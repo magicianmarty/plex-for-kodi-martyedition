@@ -129,9 +129,11 @@ class SectionBadgesTest(KodiTestCase):
         self.sectionBadges.load()
 
         paths = [p for p, _ in self.server.queries]
-        self.assertEqual(2, len(paths))
-        self.assertTrue(any("dovi=1" in p for p in paths))
-        self.assertTrue(any("hdr=1" in p for p in paths))
+        self.assertEqual(1, len([p for p in paths if "dovi=1" in p]))
+        self.assertEqual(1, len([p for p in paths if "hdr=1" in p]))
+        # Plus one batch for the Dolby Vision profiles; a second load() adds
+        # nothing, which is what makes this cheap enough to do on open.
+        self.assertEqual(3, len(paths))
 
     def test_an_item_gets_both_kinds_of_badge(self):
         self.sectionBadges.load()
@@ -158,6 +160,50 @@ class SectionBadgesTest(KodiTestCase):
     def test_the_request_is_capped(self):
         self.sectionBadges.load()
         self.assertEqual(badges.MAX_KEYS, self.server.queries[0][1].get("limit"))
+
+
+class ProfileTest(KodiTestCase):
+    """
+    Dolby Vision profile on the chip. Profile 7 is dual-layer FEL and 8 is
+    single-layer; they behave differently on playback, so "DV7" says more than
+    "DV". The listing cannot tell you, and one request per title would be 43 -
+    /library/metadata takes a comma-separated list instead.
+    """
+
+    def setUp(self):
+        KodiTestCase.setUp(self)
+        metadata = ("<MediaContainer>"
+                    "<Video ratingKey='11'><Media><Part>"
+                    "<Stream streamType='1' DOVIPresent='1' DOVIProfile='7'/>"
+                    "</Part></Media></Video>"
+                    "<Video ratingKey='12'><Media><Part>"
+                    "<Stream streamType='1' DOVIPresent='1' DOVIProfile='8'/>"
+                    "</Part></Media></Video>"
+                    "<Video ratingKey='13'><Media><Part>"
+                    "<Stream streamType='1'/>"
+                    "</Part></Media></Video>"
+                    "</MediaContainer>")
+        self.server = FakeServer({"dovi=1": listing("11", "12", "13"),
+                                  "hdr=1": listing(),
+                                  "/library/metadata/": metadata})
+        self.sectionBadges = badges.SectionBadges(FakeSection(self.server))
+        self.sectionBadges.load()
+
+    def test_the_profile_rides_on_the_chip(self):
+        self.assertEqual("DV7", self.sectionBadges.label(badges.DV, FakeItem("11")))
+        self.assertEqual("DV8", self.sectionBadges.label(badges.DV, FakeItem("12")))
+
+    def test_a_dv_title_with_no_profile_stays_a_plain_dv(self):
+        """Some titles match the filter without the server naming a profile."""
+        self.assertEqual("DV", self.sectionBadges.label(badges.DV, FakeItem("13")))
+
+    def test_the_whole_section_costs_one_extra_request(self):
+        metadata = [p for p, _ in self.server.queries if "/library/metadata/" in p]
+        self.assertEqual(1, len(metadata))
+        self.assertIn("11,12,13", metadata[0])
+
+    def test_other_badges_are_unaffected(self):
+        self.assertEqual("ATMOS", self.sectionBadges.label(badges.ATMOS, FakeItem("11")))
 
 
 class SlotTest(KodiTestCase):

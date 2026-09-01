@@ -113,7 +113,7 @@
                                 <colordiffuse>FFCC7B19</colordiffuse>
                             </control>
                         </control>
-                        {% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=0 & chip_w=46 & chip_h=18 & chip_slots=2 & chip_font="font10" %}
+                        {% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=0 & chip_w=52 & chip_h=18 & chip_slots=2 & chip_font="font10" %}
 {% include "includes/watched_indicator.xml.tpl" with xoff=162 & uw_size=29 & with_count=True & scale="small" %}
                         <!-- Title/year labels intentionally removed to hide text under posters -->
                     </control>
@@ -177,7 +177,8 @@
                                     <colordiffuse>FFCC7B19</colordiffuse>
                                 </control>
                             </control>
-                            {% include "includes/watched_indicator.xml.tpl" with xoff=162 & uw_size=29 & with_count=True & scale="small" %}
+                            {% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=0 & chip_w=52 & chip_h=18 & chip_slots=2 & chip_font="font10" %}
+{% include "includes/watched_indicator.xml.tpl" with xoff=162 & uw_size=29 & with_count=True & scale="small" %}
                             <!-- Title/year labels intentionally removed to hide text under posters -->
                         </control>
                         <control type="image">

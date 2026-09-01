@@ -40,6 +40,10 @@ FILTERS = {DV: "dovi", HDR: "hdr"}
 # badges are worth, and a library that size is not curated anyway.
 MAX_KEYS = 5000
 
+# Plex takes a comma-separated list of rating keys on /library/metadata, which
+# is how the Dolby Vision profiles come back in one request rather than 43.
+PROFILE_BATCH = 150
+
 
 def attr(medium, name):
     """
@@ -90,6 +94,8 @@ class SectionBadges(object):
     def __init__(self, section):
         self.section = section
         self.keys = {}
+        # {ratingKey: "7"} - which Dolby Vision profile, where the server says.
+        self.profiles = {}
         self.loaded = False
 
     def load(self):
@@ -97,8 +103,35 @@ class SectionBadges(object):
             return self.loaded
         for badge, filter_name in FILTERS.items():
             self.keys[badge] = self._keys(filter_name)
+        self._loadProfiles()
         self.loaded = True
         return True
+
+    def _loadProfiles(self):
+        """
+        Which Dolby Vision profile each DV title is.
+
+        Profile matters here: 7 is dual-layer FEL, 8 is single-layer, and they
+        behave differently on playback - so "DV7" is worth more than "DV". The
+        listing cannot say, and asking per item would be one request each, but
+        /library/metadata takes a comma-separated list, so the whole section
+        costs one round trip.
+        """
+        keys = sorted(self.keys.get(DV) or ())
+        for start in range(0, len(keys), PROFILE_BATCH):
+            batch = keys[start:start + PROFILE_BATCH]
+            data = self.section.server.query("/library/metadata/{0}".format(",".join(batch)))
+            if data is None:
+                continue
+            for video in data:
+                key = video.attrib.get("ratingKey")
+                if not key:
+                    continue
+                for stream in video.iter("Stream"):
+                    profile = stream.attrib.get("DOVIProfile")
+                    if profile:
+                        self.profiles[str(key)] = str(profile)
+                        break
 
     def _keys(self, filter_name):
         path = "/library/sections/{0}/all?{1}=1".format(self.section.key, filter_name)
@@ -111,6 +144,17 @@ class SectionBadges(object):
             if key:
                 found.add(str(key))
         return found
+
+    def label(self, badge, item):
+        """
+        What a chip says. Dolby Vision carries its profile when the server
+        knows it - some titles match the filter without one, and those stay a
+        plain DV rather than claiming a profile we did not see.
+        """
+        if badge != DV:
+            return LABELS[badge]
+        profile = self.profiles.get(str(getattr(item, "ratingKey", "") or ""))
+        return "DV{0}".format(profile) if profile else LABELS[DV]
 
     def of(self, item):
         """Every badge for one item, listing-derived and server-derived."""
