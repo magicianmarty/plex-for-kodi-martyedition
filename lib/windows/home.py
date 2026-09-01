@@ -369,6 +369,23 @@ class PlaylistsSection(VirtualSection):
 playlists_section = PlaylistsSection()
 
 
+class DownloadsSection(VirtualSection):
+    """
+    A tile on the top bar rather than an entry buried in a context menu: what
+    the stack is fetching is something you check at a glance, the same way you
+    check what is on Deck.
+    """
+    key = 'downloads'
+    type = 'downloads'
+    title = T(35059, 'Downloads')
+
+    locations = []
+    isMapped = False
+
+
+downloads_section = DownloadsSection()
+
+
 # item types that can be pinned to the top bar as a view of their own, per library type
 PINNABLE_TYPES = {
     'movie': ('collection',),
@@ -3905,6 +3922,9 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
             if pl:
                 sections.append(playlists_section)
 
+        if downloads.configured():
+            sections.append(downloads_section)
+
         try:
             _sections = plexapp.SERVERMANAGER.selectedServer.library.sections()
         except plexnet.exceptions.BadRequest:
@@ -3952,7 +3972,8 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
         if plexapp.SERVERMANAGER.selectedServer.hasHubs():
             # Include hidden sections that are needed for cross-section hubs.
             # Pinned item-type views share their library's hubs, so they're never fetched.
-            fetch_sections = [s for s in sections if not isinstance(s, PinnedTypeSection)]
+            fetch_sections = [s for s in sections
+                              if not isinstance(s, (PinnedTypeSection, DownloadsSection))]
             required_sources = self.getRequiredSourceSections(None)  # Home's required sources
             for source_key in required_sources:
                 str_key = str(source_key) if source_key is not None else None
@@ -4085,6 +4106,11 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
     def _showHubs(self, section=None, update=False, force=False, reselect_pos_dict=None):
         if not update:
             self.clearHubs()
+
+        if isinstance(section, DownloadsSection):
+            # A launcher, not a library: there is nothing to draw underneath it.
+            self.setBoolProperty('no.content', False)
+            return
 
         if not section.server.DEFER_HUBS and not plexapp.SERVERMANAGER.selectedServer.hasHubs():
             return
@@ -4686,6 +4712,8 @@ class HomeWindow(kodigui.BaseWindow, util.CronReceiver, CommonMixin, SpoilersMix
             self.sectionChangeTimeout = None
         elif section.type in ('playlists',):
             self.processCommand(opener.handleOpen(playlists.PlaylistsWindow))
+        elif section.type in ('downloads',):
+            self.processCommand(opener.handleOpen(downloads.DownloadsWindow))
 
     def onNewServer(self, **kwargs):
         self.showServers(from_refresh=True)

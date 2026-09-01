@@ -37,9 +37,9 @@ def events():
 class ParseTest(KodiTestCase):
     def test_every_frame_in_a_real_recording_is_read(self):
         names = [name for name, _ in events()]
-        self.assertEqual(10, len(names))
+        self.assertEqual(12, len(names))
         self.assertEqual(5, names.count("activity"))
-        self.assertEqual(2, names.count("timeline"))
+        self.assertEqual(4, names.count("timeline"))
         self.assertEqual(2, names.count("status"))
         self.assertEqual(1, names.count("ping"))
 
@@ -60,11 +60,11 @@ class MeaningTest(KodiTestCase):
         return [plexevents.readEvent(n, p) for n, p in events() if n == name]
 
     def test_only_the_end_of_a_section_scan_is_a_refresh(self):
-        kinds = [kind for kind, _, _ in self.read("activity")]
+        kinds = [kind for kind, _, _, _ in self.read("activity")]
         self.assertEqual(["scan"], [k for k in kinds if k])
 
     def test_the_refresh_carries_the_section_that_changed(self):
-        kind, section, _title = [e for e in self.read("activity") if e[0]][0]
+        kind, section, _title, _item = [e for e in self.read("activity") if e[0]][0]
         self.assertEqual("scan", kind)
         self.assertEqual("3", section)
 
@@ -76,16 +76,28 @@ class MeaningTest(KodiTestCase):
     def test_another_kind_of_activity_is_not_a_library_change(self):
         payload = {"ActivityNotification": {"event": "ended", "Activity": {
             "type": "provider.subscriptions.process", "title": "Processing subscriptions"}}}
-        self.assertEqual((None, None, None), plexevents.readEvent("activity", payload))
+        self.assertEqual((None, None, None, None), plexevents.readEvent("activity", payload))
 
     def test_a_finished_item_is_named_so_it_can_be_announced(self):
         finished = [e for e in self.read("timeline") if e[0]]
-        self.assertEqual([("item", "3", "Conan the Barbarian")], finished)
+        self.assertEqual([("item", "3", "Conan the Barbarian", "86099")] * 2, finished)
+
+    def test_an_entry_still_naming_a_media_operation_is_not_an_arrival(self):
+        """
+        Every settled entry arrives twice, once carrying mediaState
+        ('analyzing') and once without. Taking both announces everything twice.
+        """
+        payload = {"TimelineEntry": {"sectionID": "3", "itemID": "1", "state": 5,
+                                     "title": "x", "mediaState": "analyzing"}}
+        self.assertEqual((None, None, None, None), plexevents.readEvent("timeline", payload))
 
     def test_an_item_still_being_worked_on_is_not_announced(self):
-        """state 5 is done; anything less is mid-flight."""
+        """
+        Two ways to be mid-flight, and the recording has one of each: a state
+        below 5, and a settled entry that still names a media operation.
+        """
         pending = [e for e in self.read("timeline") if e[0] is None]
-        self.assertEqual(1, len(pending))
+        self.assertEqual(2, len(pending))
 
     def test_a_status_message_is_never_a_refresh(self):
         """
@@ -93,10 +105,10 @@ class MeaningTest(KodiTestCase):
         well as the end, and names no section - refreshing on it would redraw
         everything before anything had changed.
         """
-        self.assertEqual([(None, None, None)] * 2, self.read("status"))
+        self.assertEqual([(None, None, None, None)] * 2, self.read("status"))
 
     def test_a_ping_is_liveness_and_nothing_else(self):
-        self.assertEqual((None, None, None), plexevents.readEvent("ping", {}))
+        self.assertEqual((None, None, None, None), plexevents.readEvent("ping", {}))
 
 
 class ListenerTest(KodiTestCase):
@@ -140,6 +152,45 @@ class ListenerTest(KodiTestCase):
             listener.handle(name, payload)
         listener.flush()
         self.assertEqual([], self.signals)
+
+    def test_the_same_item_is_announced_once_not_every_time_it_is_touched(self):
+        """
+        The reported bug: the server re-emits state 5 for the same itemID every
+        ~40 seconds while it works on it, so the notification came back over
+        and over for something that arrived once.
+        """
+        self.feed()
+        titles = [t for s in self.signals for t in s["titles"]]
+        self.assertEqual(["Conan the Barbarian"], titles)
+
+    def test_the_same_item_arriving_again_later_is_not_announced_twice(self):
+        """
+        The reported bug in its actual shape: within one burst the titles list
+        already collapses duplicates, so what bit was the *next* poll - the
+        server re-emits the same itemID ~40s later and it was announced again.
+        """
+        entry = {"TimelineEntry": {"sectionID": "3", "itemID": "86099", "state": 5,
+                                   "title": "Conan the Barbarian"}}
+        for _ in range(4):
+            self.listener.handle("timeline", entry)
+            self.listener.flush(force=True)
+
+        titles = [t for s in self.signals for t in s["titles"]]
+        self.assertEqual(["Conan the Barbarian"], titles)
+        self.assertEqual(1, len(self.signals))
+
+    def test_an_item_seen_long_ago_is_news_again(self):
+        listener = plexevents.EventListener(FakeServer(), debounce=0)
+        self.assertTrue(listener.firstSighting("42"))
+        self.assertFalse(listener.firstSighting("42"))
+        listener._seen["42"] = 0
+        self.assertTrue(listener.firstSighting("42"))
+
+    def test_the_seen_list_cannot_grow_without_bound(self):
+        listener = plexevents.EventListener(FakeServer(), debounce=0)
+        for i in range(plexevents.SEEN_MAX + 50):
+            listener.firstSighting(str(i))
+        self.assertLessEqual(len(listener._seen), plexevents.SEEN_MAX)
 
     def test_the_token_goes_on_the_stream_url(self):
         self.assertIn("/:/eventsource/notifications", self.listener.url)

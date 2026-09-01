@@ -46,6 +46,13 @@ LIBRARY_UPDATE = "LIBRARY_UPDATE"
 # TimelineEntry.state 5 is "done with this item".
 TIMELINE_FINAL = 5
 
+# How long an item stays "already announced". The server re-emits state 5 for
+# the same itemID every ~40 seconds while it is analysing, and emits each one
+# twice - once carrying mediaState, once without - so without this you get the
+# same notification over and over for something that arrived once.
+SEEN_TTL = 6 * 3600
+SEEN_MAX = 500
+
 # A scan emits its 'ended' per section, but metadata and analysis land after it,
 # so collapse a burst into one refresh rather than redrawing repeatedly.
 DEBOUNCE_SECONDS = 3.0
@@ -92,34 +99,39 @@ def parseStream(lines):
 
 def readEvent(name, payload):
     """
-    What one event means to us: (kind, section id, title).
+    What one event means to us: (kind, section id, title, item id).
 
     kind is 'scan' when a section finished scanning, 'item' when a single thing
-    changed, 'library' when the server said something happened but not where,
-    and None for the 1500 messages per scan that mean nothing to a client.
+    changed, and None for the 1500 messages per scan that mean nothing to a
+    client.
     """
     if name == "activity" or "ActivityNotification" in payload:
         notification = payload.get("ActivityNotification") or {}
         activity = notification.get("Activity") or {}
         if activity.get("type") != SECTION_SCAN:
-            return None, None, None
+            return None, None, None, None
         if notification.get("event") != "ended":
-            return None, None, None
+            return None, None, None, None
         context = activity.get("Context") or {}
-        return "scan", context.get("librarySectionID"), activity.get("title")
+        return "scan", context.get("librarySectionID"), activity.get("title"), None
 
     if name == "timeline" or "TimelineEntry" in payload:
         entry = payload.get("TimelineEntry") or {}
         if entry.get("state") != TIMELINE_FINAL:
-            return None, None, None
-        return "item", entry.get("sectionID"), entry.get("title")
+            return None, None, None, None
+        # Every settled entry arrives twice, once with mediaState ("analyzing")
+        # and once without. The one still naming a media operation is the
+        # server telling us it is mid-job, not that something arrived.
+        if entry.get("mediaState"):
+            return None, None, None, None
+        return "item", entry.get("sectionID"), entry.get("title"), str(entry.get("itemID") or "")
 
     # StatusNotification/LIBRARY_UPDATE is deliberately not a trigger. Watching
     # a live server shows it firing at the *start* of a scan ("Scanning the
     # Movies section") as well as at the end, and it names no section - so
     # acting on it refreshes everything before anything has changed. The
     # section-scoped events above already cover the end of a scan.
-    return None, None, None
+    return None, None, None, None
 
 
 class EventListener(threading.Thread):
@@ -141,6 +153,7 @@ class EventListener(threading.Thread):
         self.connected = False
         self._pending = {}
         self._pendingSince = 0
+        self._seen = {}
 
     @property
     def url(self):
@@ -185,14 +198,34 @@ class EventListener(threading.Thread):
             response.close()
 
     def handle(self, name, payload):
-        kind, section, title = readEvent(name, payload)
+        kind, section, title, itemID = readEvent(name, payload)
         if not kind:
             return
+        if kind == "item" and not self.firstSighting(itemID):
+            return
+
         titles = self._pending.setdefault(section, [])
         if kind == "item" and title and title not in titles:
             titles.append(title)
         if not self._pendingSince:
             self._pendingSince = time.time()
+
+    def firstSighting(self, itemID):
+        """
+        Whether this item is news. The same itemID comes back every time the
+        server touches it again, and announcing each one is the difference
+        between "Conan the Barbarian arrived" and being told so all evening.
+        """
+        if not itemID:
+            return True
+        now = time.time()
+        if now - self._seen.get(itemID, 0) < SEEN_TTL:
+            return False
+        if len(self._seen) >= SEEN_MAX:
+            for key, seen in sorted(self._seen.items(), key=lambda kv: kv[1])[:SEEN_MAX // 2]:
+                del self._seen[key]
+        self._seen[itemID] = now
+        return True
 
     def flush(self, force=False):
         if not self._pending:

@@ -17,6 +17,12 @@ event: timeline
 data: {"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"86099","type":1,"title":"Conan the Barbarian","state":5,"mediaState":"analyzing","updatedAt":1788253594}}
 
 event: timeline
+data: {"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"86099","type":1,"title":"Conan the Barbarian","state":5,"updatedAt":1788253594}}
+
+event: timeline
+data: {"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"86099","type":1,"title":"Conan the Barbarian","state":5,"updatedAt":1788253633}}
+
+event: timeline
 data: {"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"2","itemID":"86098","type":4,"title":"Band of Brothers S01 E01","state":3,"updatedAt":1788253594}}
 
 event: activity
