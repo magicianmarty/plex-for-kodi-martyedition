@@ -1,10 +1,13 @@
-{# Format chips over the bottom-left of the artwork, opposite the watched tick.
+{# Format chips across the top-left of the artwork. The watched tick owns the
+   top-right, so the number of chips is capped per view: three fit on a full
+   poster, only two on the small ones before they collide with it.
    Three fixed slots rather than one long label: the Python side fills badge.1,
    badge.2 and badge.3 in priority order, so each chip has a fixed position and
    nothing has to be measured or reflowed. Anything below the poster collides
    with the title. #}
-{% with chip_w = chip_w|default(52) & chip_h = chip_h|default(22) & chip_gap = chip_gap|default(4) & chip_font = chip_font|default("font10") %}
+{% with chip_w = chip_w|default(52) & chip_h = chip_h|default(22) & chip_gap = chip_gap|default(4) & chip_font = chip_font|default("font10") & chip_slots = chip_slots|default(3) %}
 {% for slot in [1, 2, 3] %}
+{% if slot <= chip_slots %}
 <control type="group">
     <visible>!String.IsEmpty(ListItem.Property(badge.{{ slot }}))</visible>
     <posx>{{ badge_x + (slot - 1) * (chip_w + chip_gap) }}</posx>
@@ -32,5 +35,6 @@
         <label>$INFO[ListItem.Property(badge.{{ slot }})]</label>
     </control>
 </control>
+{% endif %}
 {% endfor %}
 {% endwith %}
