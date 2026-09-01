@@ -1925,6 +1925,8 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
         and HDR need the section's answer, which arrives on a background thread
         - until it does the tile simply shows fewer badges.
         """
+        if not util.getSetting('library_badges', True):
+            return
         try:
             found = self.badges.of(obj) if self.badges else badges.fromMedia(obj)
         except Exception:
@@ -1942,11 +1944,14 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                 mli.setProperty('badge.{0}'.format(slot), '')
                 continue
             badge = shown[slot - 1]
-            label = self.badges.label(badge, obj) if self.badges else badges.LABELS[badge]
+            label = (self.badges.label(badge, obj) if self.badges
+                     else badges.label(badge, obj))
             mli.setProperty('badge.{0}'.format(slot), label)
 
     def loadBadges(self):
         """Ask the server which items are Dolby Vision or HDR, once per section."""
+        if not util.getSetting('library_badges', True):
+            return
         if self.badges or self.section.TYPE not in ('movie', 'show', 'movies_shows'):
             return
         self.badges = badges.SectionBadges(self.section)

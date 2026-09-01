@@ -673,6 +673,12 @@ class Settings(object):
         ),
         'ui': (
             T(32467, 'User Interface'), (
+                BoolSetting('library_badges',
+                            T(35085, 'Show format badges on library tiles'), True)
+                .description(T(35086, "Dolby Vision (with its profile), Atmos, DTS:X, HDR, "
+                                      "resolution and channel layout, shown on the artwork. "
+                                      "Dolby Vision and HDR cost one request per library when "
+                                      "it is opened; everything else is already in the listing.")),
                 OptionsSetting(
                     'theme',
                     T(32983, 'Theme'),

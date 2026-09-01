@@ -27,8 +27,9 @@ class FakeMedium(object):
     """
     __slots__ = ("_data",)
 
-    def __init__(self, videoResolution="", audioProfile=""):
-        self._data = {"videoResolution": videoResolution, "audioProfile": audioProfile}
+    def __init__(self, videoResolution="", audioProfile="", audioChannels=""):
+        self._data = {"videoResolution": videoResolution, "audioProfile": audioProfile,
+                      "audioChannels": audioChannels}
 
     def get(self, key, default=None):
         return self._data.get(key, default)
@@ -37,9 +38,10 @@ class FakeMedium(object):
 class PlainMedium(object):
     """Some callers hand back plain attributes; both shapes have to work."""
 
-    def __init__(self, videoResolution="", audioProfile=""):
+    def __init__(self, videoResolution="", audioProfile="", audioChannels=""):
         self.videoResolution = videoResolution
         self.audioProfile = audioProfile
+        self.audioChannels = audioChannels
 
 
 class FakeItem(object):
@@ -88,9 +90,39 @@ class ListingBadgesTest(KodiTestCase):
         item = FakeItem(media=[FakeMedium(audioProfile="ma + dts:x")])
         self.assertEqual({badges.DTSX}, badges.fromMedia(item))
 
-    def test_plain_media_earns_nothing(self):
-        item = FakeItem(media=[FakeMedium(videoResolution="1080", audioProfile="lc")])
-        self.assertEqual(set(), badges.fromMedia(item))
+    def test_ordinary_media_still_says_something_useful(self):
+        """An HD stereo film is not special, but "HD 2.0" is worth knowing."""
+        item = FakeItem(media=[FakeMedium(videoResolution="1080", audioChannels="2")])
+        self.assertEqual({badges.HD, badges.CHANNELS}, badges.fromMedia(item))
+        self.assertEqual(["HD", "2.0"],
+                         [badges.label(b, item) for b in badges.ordered(badges.fromMedia(item))])
+
+    def test_the_resolution_tiers_the_server_actually_uses(self):
+        """Live values off a real library: sd, 480, 576, 720, 1080, 4k."""
+        for resolution, expected in (("4k", badges.UHD), ("1080", badges.HD),
+                                     ("720", badges.HD), ("576", badges.SD),
+                                     ("480", badges.SD), ("sd", badges.SD)):
+            item = FakeItem(media=[FakeMedium(videoResolution=resolution)])
+            self.assertIn(expected, badges.fromMedia(item), resolution)
+
+    def test_only_one_resolution_tier_survives(self):
+        """Two versions of a film must not badge it both 4K and SD."""
+        item = FakeItem(media=[FakeMedium(videoResolution="4k"),
+                               FakeMedium(videoResolution="sd")])
+        found = badges.fromMedia(item)
+        self.assertIn(badges.UHD, found)
+        self.assertNotIn(badges.SD, found)
+        self.assertNotIn(badges.HD, found)
+
+    def test_channel_layouts_read_the_way_people_say_them(self):
+        for count, expected in (("2", "2.0"), ("6", "5.1"), ("8", "7.1"),
+                                ("1", "1.0"), ("7", "6.1")):
+            item = FakeItem(media=[FakeMedium(audioChannels=count)])
+            self.assertEqual(expected, badges.label(badges.CHANNELS, item), count)
+
+    def test_no_channel_count_means_no_chip(self):
+        item = FakeItem(media=[FakeMedium(videoResolution="1080")])
+        self.assertNotIn(badges.CHANNELS, badges.fromMedia(item))
 
     def test_the_attributes_are_read_the_way_plexnet_exposes_them(self):
         """PlexMedia has __slots__: getattr sees nothing, get() sees everything."""
@@ -237,14 +269,17 @@ class OrderTest(KodiTestCase):
 
     def test_a_tile_never_shows_more_than_it_can_fit(self):
         """
-        A 4K DV Atmos disc qualifies for four - The Abyss on the real server
-        does - and four does not fit on a small poster.
+        A 4K DV Atmos disc qualifies for six - The Abyss on the real server
+        does - and even three is a lot on a small poster. The rare things win:
+        nobody needs telling that a Dolby Vision disc is also HD.
         """
-        everything = {badges.DV, badges.ATMOS, badges.HDR, badges.DTSX, badges.UHD}
+        everything = {badges.DV, badges.ATMOS, badges.HDR, badges.DTSX,
+                      badges.UHD, badges.HD, badges.CHANNELS}
         shown = badges.ordered(everything)
         self.assertEqual(badges.MAX_SHOWN, len(shown))
-        self.assertEqual([badges.DV, badges.ATMOS, badges.HDR], shown)
+        self.assertEqual([badges.DV, badges.ATMOS, badges.DTSX], shown)
 
-    def test_every_badge_has_a_label(self):
+    def test_every_badge_can_produce_a_label(self):
+        item = FakeItem(media=[FakeMedium(audioChannels="6")])
         for badge in badges.ORDER:
-            self.assertTrue(badges.LABELS.get(badge))
+            self.assertTrue(badges.label(badge, item), badge)

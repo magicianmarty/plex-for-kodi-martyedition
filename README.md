@@ -53,11 +53,15 @@ changes follow from that.
 
 | Change | What it gets you |
 |---|---|
+| **Format badges on the artwork** | Small chips across the top of every poster: **DV7** / **DV8** (the actual Dolby Vision profile, which matters — 7 is dual-layer FEL, 8 single-layer), **ATMOS**, **DTS:X**, **HDR**, and the resolution and channel layout for everything else, so an ordinary film reads "HD 5.1". Only the rarest three fit, so a Dolby Vision disc spends its chips on what makes it special rather than telling you it is also HD. |
 | **One-click quick-filter chips** | An always-visible chip bar on the library views: Dolby Vision, Dolby Atmos, HDR, 4K, Unplayed. One press each way instead of a three-to-five click dive through the filter dropdown. The chips drive the existing filter plumbing, so they persist per section and stack with each other; 4K drives the resolution filter. Video sections only. |
 | **Filters named like the format** | The dropdown says "Dolby Vision" rather than `DOVI`, and gained a "Dolby Atmos" entry — the server advertises that filter, upstream just had no label for it. |
+| **Scan Library Files, where you are** | Upstream hides it in the home screen's section context menu. It is now in the library's own Options menu and as a button on the Downloads screen, and it is offered only when you actually own the server — `isAdmin` alone meant "not a managed user", so a shared server offered it and got a 403. |
+| **A Downloads screen** | What Sonarr, Radarr and qBittorrent are working on, as tiles: poster, state, percentage, and — the part you cannot see anywhere else — whether a finished grab has been *imported into Plex* yet. A season pack is one row, not one per episode. On the home bar as its own tile, with a preview row of what is in flight when you hover it. |
+| **Told when something lands** | A notification when Sonarr or Radarr actually *imports* something — read from their history, not from "it left the queue", because a queue entry also leaves when it is removed, blocked or fails. Never over playback. |
+| **The library refreshes itself** | The client listens to Plex's event stream, so a new film appears when the server finishes scanning rather than after the five-minute staleness window. |
 | **Seek OSD crash fix** | `updateProgress()` divided by an offset that is `None` until the first playback tick lands, which killed the seek OSD for the rest of the session with a `TypeError`. Now guarded the way `trueOffset()` already was. |
-| **Kodi 22 (Piers) support** | Kodi 22 ships Python 3.14, which drops modules the add-on's vendored packages still reached for. The vendored Python 2 `typing` backport is gone (it sat ahead of the stdlib on `sys.path`), `datetime.utcnow()` is replaced without changing what existing caches compare against, and `pkg_resources` is now optional. `addon.xml` needs nothing: Kodi 22 offers `xbmc.python` 3.1.0, a minor bump over the 3.0.0 we require. |
-| **Downloads from the couch** | A Downloads screen showing what Sonarr, Radarr and qBittorrent are working on: progress, ETA, and — the bit that matters — whether a finished grab has actually been imported into Plex yet. Reachable from the library and home Options menus, with an optional notification when something lands. Nothing is typed on the remote: it finds the services on your network, and the credentials come from a file you drop in once. |
+| **Kodi 22 (Piers) support** | Kodi 22 ships Python 3.14, which drops modules the add-on's vendored packages still reached for. The vendored Python 2 `typing` backport is gone (it sat ahead of the stdlib on `sys.path`), `datetime.utcnow()` is replaced without changing what existing caches compare against, and `pkg_resources` is now optional. |
 | **Tests and CI** | The suite runs on every push and pull request across Python 3.8 (Kodi 19/20), 3.11 (Kodi 21) and 3.14 (Kodi 22) plus Windows, the add-on is byte-compiled against Kodi 19's Python, and an installable zip is built and checked on every run. |
 
 ## Install
@@ -100,6 +104,16 @@ same move in reverse — install pannal's zip over this one.
 `pannal/plex-for-kodi`, so left alone it will eventually offer, and install,
 upstream over the top of this build. In the add-on's own settings:
 **System → Check for updates**, off.
+
+### Settings worth knowing about
+
+Everything here can be turned off, and lives in the add-on's own settings:
+
+| Setting | |
+|---|---|
+| **Look and feel → Show format badges on library tiles** | The chips above. Dolby Vision and HDR cost one request per library when it is opened — everything else is already in the listing — so this is the switch if you want the tiles bare. |
+| **Downloads and services** | Addresses and credentials for Sonarr, Radarr and qBittorrent, whether to announce finished downloads, and whether to scan the Plex library when one lands. |
+| **System → Refresh the library as soon as the server changes it** | The Plex event stream. Off falls back to the five-minute staleness window. |
 
 ### Downloads: pointing it at your stack
 

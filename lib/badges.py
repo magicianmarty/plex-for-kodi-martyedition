@@ -20,14 +20,27 @@ from __future__ import absolute_import
 ATMOS = "atmos"
 DTSX = "dtsx"
 UHD = "4k"
+HD = "hd"
+SD = "sd"
+CHANNELS = "channels"
 HDR = "hdr"
 DV = "dv"
 
-# Longest first: a tile has room for two or three, and "Dolby Vision" beats
-# "4K" for anyone who cares enough to look.
-ORDER = (DV, ATMOS, HDR, DTSX, UHD)
+# What the server calls a resolution, and which tier it belongs to. Real values
+# from a live library: sd, 480, 576, 720, 1080, 4k.
+RESOLUTIONS = {"4k": UHD, "1080": HD, "720": HD, "576": SD, "480": SD, "sd": SD}
 
-LABELS = {DV: "DV", ATMOS: "ATMOS", HDR: "HDR", DTSX: "DTS:X", UHD: "4K"}
+# Channel counts as people say them out loud.
+CHANNEL_LABELS = {1: "1.0", 2: "2.0", 3: "2.1", 4: "4.0", 5: "4.1",
+                  6: "5.1", 7: "6.1", 8: "7.1", 10: "9.1", 12: "11.1"}
+
+# Rarest first, because only two or three chips fit. Resolution tiers are
+# mutually exclusive, so an ordinary film shows "HD 5.1" while a 4K Dolby
+# Vision disc spends its chips on the things that make it special.
+ORDER = (DV, ATMOS, DTSX, HDR, UHD, HD, SD, CHANNELS)
+
+LABELS = {DV: "DV", ATMOS: "ATMOS", HDR: "HDR", DTSX: "DTS:X",
+          UHD: "4K", HD: "HD", SD: "SD", CHANNELS: ""}
 
 # A 4K Dolby Vision Atmos disc earns four of these, which is more than a small
 # poster can show; the order above decides which three survive.
@@ -68,13 +81,51 @@ def fromMedia(item):
     for medium in media:
         resolution = attr(medium, "videoResolution").lower()
         profile = attr(medium, "audioProfile").lower()
-        if resolution == "4k":
-            found.add(UHD)
+        tier = RESOLUTIONS.get(resolution)
+        if tier:
+            found.add(tier)
         if "atmos" in profile:
             found.add(ATMOS)
         if "dts:x" in profile or "dtsx" in profile:
             found.add(DTSX)
+        if channels(medium):
+            found.add(CHANNELS)
+
+    # One resolution tier, the best of them: a file is not both 4K and SD.
+    for better, worse in ((UHD, HD), (UHD, SD), (HD, SD)):
+        if better in found:
+            found.discard(worse)
     return found
+
+
+def channels(medium):
+    """The channel layout as a label, or "" when the server did not say."""
+    raw = attr(medium, "audioChannels")
+    try:
+        count = int(float(raw))
+    except (TypeError, ValueError):
+        return ""
+    return CHANNEL_LABELS.get(count, "{0}.0".format(count) if count else "")
+
+
+def channelsOf(item):
+    for medium in getattr(item, "media", None) or []:
+        label_ = channels(medium)
+        if label_:
+            return label_
+    return ""
+
+
+def label(badge, item=None, profile=None):
+    """
+    What a chip says. Two of them depend on the item rather than the badge:
+    Dolby Vision carries its profile, and the channel chip *is* its value.
+    """
+    if badge == DV:
+        return "DV{0}".format(profile) if profile else LABELS[DV]
+    if badge == CHANNELS:
+        return channelsOf(item) if item is not None else ""
+    return LABELS.get(badge, "")
 
 
 def ordered(badges):
@@ -147,14 +198,12 @@ class SectionBadges(object):
 
     def label(self, badge, item):
         """
-        What a chip says. Dolby Vision carries its profile when the server
-        knows it - some titles match the filter without one, and those stay a
-        plain DV rather than claiming a profile we did not see.
+        What a chip says, with the profile this section knows about. Some
+        titles match the Dolby Vision filter without the server naming a
+        profile, and those stay a plain DV rather than claiming one.
         """
-        if badge != DV:
-            return LABELS[badge]
         profile = self.profiles.get(str(getattr(item, "ratingKey", "") or ""))
-        return "DV{0}".format(profile) if profile else LABELS[DV]
+        return label(badge, item, profile)
 
     def of(self, item):
         """Every badge for one item, listing-derived and server-derived."""

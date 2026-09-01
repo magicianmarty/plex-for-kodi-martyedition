@@ -3496,3 +3496,11 @@ msgstr ""
 msgctxt "#35084"
 msgid "Downloading"
 msgstr ""
+
+msgctxt "#35085"
+msgid "Show format badges on library tiles"
+msgstr ""
+
+msgctxt "#35086"
+msgid "Dolby Vision (with its profile), Atmos, DTS:X, HDR, resolution and channel layout, shown on the artwork. Dolby Vision and HDR cost one request per library when it is opened; everything else is already in the listing."
+msgstr ""
