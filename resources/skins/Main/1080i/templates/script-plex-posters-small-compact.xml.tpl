@@ -114,7 +114,7 @@
                             </control>
                         </control>
                         {% include "includes/watched_indicator.xml.tpl" with xoff=162 & uw_size=29 & with_count=True & scale="small" %}
-{% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=vscale(374) & badge_w=180 & badge_h=vscale(22) & badge_font="font10" %}
+{% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=vscale(215) & chip_w=46 & chip_h=18 & chip_font="font10" %}
                         <!-- Title/year labels intentionally removed to hide text under posters -->
                     </control>
                 </control>

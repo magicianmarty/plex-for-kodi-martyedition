@@ -100,7 +100,7 @@
                             </control>
                         </control>
                         {% include "includes/watched_indicator.xml.tpl" with xoff=263 & uw_size=45 & with_count=True & scale="medium" %}
-{% include "includes/format_badges.xml.tpl" with badge_x=8 & badge_y=vscale(374) & badge_w=271 & badge_h=vscale(26) & badge_font="font10" %}
+{% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=vscale(360) & chip_w=54 & chip_h=22 & chip_font="font10" %}
                     </control>
                 </control>
             </itemlayout>

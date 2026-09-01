@@ -114,7 +114,7 @@
                             </control>
                         </control>
                         {% include "includes/watched_indicator.xml.tpl" with xoff=144 & uw_size=29 & with_count=True & scale="small" %}
-{% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=vscale(374) & badge_w=180 & badge_h=vscale(22) & badge_font="font10" %}
+{% include "includes/format_badges.xml.tpl" with badge_x=6 & badge_y=vscale(189) & chip_w=42 & chip_h=18 & chip_font="font10" %}
                         <control type="label">
                             <visible>String.IsEmpty(ListItem.Property(subtitle)) + !String.IsEmpty(ListItem.Property(year))</visible>
                             <scroll>false</scroll>

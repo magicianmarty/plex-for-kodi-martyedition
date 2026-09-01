@@ -132,6 +132,29 @@ class SectionBadgesTest(KodiTestCase):
         self.assertEqual(badges.MAX_KEYS, self.server.queries[0][1].get("limit"))
 
 
+class SlotTest(KodiTestCase):
+    """
+    The skin draws three chips at fixed positions, so the code decides which
+    badge goes in which slot. Anything below the poster collides with the
+    title, which is what the first attempt did.
+    """
+
+    def slots(self, found):
+        shown = badges.ordered(found)
+        return [badges.LABELS[shown[i]] if len(shown) > i else ''
+                for i in range(badges.MAX_SHOWN)]
+
+    def test_the_rarest_badge_takes_the_first_chip(self):
+        self.assertEqual(["DV", "ATMOS", "4K"],
+                         self.slots({badges.UHD, badges.ATMOS, badges.DV}))
+
+    def test_unused_chips_are_empty_so_the_skin_hides_them(self):
+        self.assertEqual(["4K", "", ""], self.slots({badges.UHD}))
+
+    def test_nothing_at_all_fills_no_chips(self):
+        self.assertEqual(["", "", ""], self.slots(set()))
+
+
 class OrderTest(KodiTestCase):
     def test_the_rarest_format_leads(self):
         """Three badges is already a lot on a poster; DV earns the front."""

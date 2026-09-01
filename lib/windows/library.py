@@ -1928,9 +1928,12 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
             found = self.badges.of(obj) if self.badges else badges.fromMedia(obj)
         except Exception:
             return
-        for badge in badges.ORDER:
-            mli.setProperty('badge.{0}'.format(badge), '1' if badge in found else '')
-        mli.setProperty('badges', " ".join(badges.LABELS[b] for b in badges.ordered(found)))
+        # Fixed slots, filled in priority order: the skin draws chip 1, 2 and 3
+        # at fixed positions, so nothing has to be measured or reflowed.
+        shown = badges.ordered(found)
+        for slot in range(1, badges.MAX_SHOWN + 1):
+            label = badges.LABELS[shown[slot - 1]] if len(shown) >= slot else ''
+            mli.setProperty('badge.{0}'.format(slot), label)
 
     def loadBadges(self):
         """Ask the server which items are Dolby Vision or HDR, once per section."""
