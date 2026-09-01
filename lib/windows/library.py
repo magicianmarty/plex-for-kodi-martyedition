@@ -24,6 +24,7 @@ from lib import util
 from lib import shuffle
 from lib.util import T
 from . import busy
+from . import downloads
 from . import dropdown
 from . import kodigui
 from . import opener
@@ -994,6 +995,9 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
                 options.append(dropdown.SEPARATOR)
             options.append({'key': 'scan_library', 'display': T(33082, 'Scan Library Files')})
 
+        if downloads.configured():
+            options.append({'key': 'downloads', 'display': T(35059, 'Downloads')})
+
         choice = dropdown.showDropdown(options, (255, 205))
         if not choice:
             return
@@ -1004,6 +1008,8 @@ class LibraryWindow(PlaybackBtnMixin, kodigui.MultiWindow, windowutils.UtilMixin
             self.goHome(self.section.getLibrarySectionId())
         elif choice['key'] == 'scan_library':
             self.scanLibrary(self.section)
+        elif choice['key'] == 'downloads':
+            downloads.show()
 
     def itemTypeButtonClicked(self):
         options = []
