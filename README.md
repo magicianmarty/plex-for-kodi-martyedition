@@ -58,6 +58,8 @@ changes follow from that.
 | **Filters named like the format** | The dropdown says "Dolby Vision" rather than `DOVI`, and gained a "Dolby Atmos" entry — the server advertises that filter, upstream just had no label for it. |
 | **Scan Library Files, where you are** | Upstream hides it in the home screen's section context menu. It is now in the library's own Options menu and as a button on the Downloads screen, and it is offered only when you actually own the server — `isAdmin` alone meant "not a managed user", so a shared server offered it and got a 403. |
 | **A Downloads screen** | What Sonarr, Radarr and qBittorrent are working on, as tiles: poster, state, percentage, and — the part you cannot see anywhere else — whether a finished grab has been *imported into Plex* yet. A season pack is one row, not one per episode. On the home bar as its own tile, with a preview row of what is in flight when you hover it. |
+| **A Downloads screen that writes back** | Clear out a stuck grab (remove, or remove and never take that release again), tell the service to search again, or **take over and pick the release yourself** — what the indexers actually have, sorted best first, with size, seeders, quality, and the reason for any the service already turned down. Torrents can be paused, resumed and removed. Files are kept unless you deliberately ask otherwise. |
+| **Add things without a keyboard** | **Download** on a Plex watchlist item sends it straight to Sonarr or Radarr — a watchlist entry carries the tmdb/tvdb id, so the match is exact and nothing is typed. There is a search-and-add route too, for what the watchlist does not cover. Quality profile and destination are asked once and remembered. |
 | **Told when something lands** | A notification when Sonarr or Radarr actually *imports* something — read from their history, not from "it left the queue", because a queue entry also leaves when it is removed, blocked or fails. Never over playback. |
 | **The library refreshes itself** | The client listens to Plex's event stream, so a new film appears when the server finishes scanning rather than after the five-minute staleness window. |
 | **Seek OSD crash fix** | `updateProgress()` divided by an offset that is `None` until the first playback tick lands, which killed the seek OSD for the rest of the session with a `TypeError`. Now guarded the way `trueOffset()` already was. |
@@ -113,6 +115,7 @@ Everything here can be turned off, and lives in the add-on's own settings:
 |---|---|
 | **Look and feel → Show format badges on library tiles** | The chips above. Dolby Vision and HDR cost one request per library when it is opened — everything else is already in the listing — so this is the switch if you want the tiles bare. |
 | **Downloads and services** | Addresses and credentials for Sonarr, Radarr and qBittorrent, whether to announce finished downloads, and whether to scan the Plex library when one lands. |
+| **Quality and destination** | Remembered after the first add rather than asked every time; clear them to be asked again. |
 | **System → Refresh the library as soon as the server changes it** | The Plex event stream. Off falls back to the five-minute staleness window. |
 
 ### Downloads: pointing it at your stack
@@ -142,6 +145,10 @@ the Kodi box, so setup is one command and survives a reinstall:
 ```sh
 ./scripts/provision-downloads.sh root@kodi-box root@media-host [qbt-user] [qbt-pass]
 ```
+
+qBittorrent is optional but worth configuring: without it you see what the
+*arrs are doing, and with it you also see the torrents they know nothing about,
+and can pause, resume and remove them.
 
 Any service can be left out, or switched off with `"enabled": false` while
 keeping its credentials. The file holds secrets in plain text, exactly as Kodi's
@@ -185,7 +192,9 @@ Pull requests are welcome. Keep the suite green, cover behaviour you change, and
 say in the PR whether it is specific to this edition or something that should go
 upstream.
 
-More background: [`docs/`](docs/) (subtitle selection, for one) and
+More background: [`docs/`](docs/) — including
+[`downloads-write-back.md`](docs/downloads-write-back.md), which is the design
+for everything the Downloads screen writes, and what is still to come — and
 [`path_mapping.example.json`](path_mapping.example.json) for local path mapping.
 
 ## Credits
