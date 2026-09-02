@@ -43,25 +43,50 @@ def ensure_plex_interface():
     return pnUtil.INTERFACE
 
 
+def _settle_player():
+    """
+    Import lib.player and wait for the monitor thread it starts to stop.
+
+    Only safe with ENV.abort_requested already set - see import_player().
+    """
+    from lib import player
+    thread = getattr(player.PLAYER, "thread", None)
+    if thread is not None:
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "PLAYER:MONITOR did not stop"
+    return player
+
+
+def import_player():
+    """
+    Import lib.player and hand it back.
+
+    Importing it builds PLAYER, which starts a non-daemon PLAYER:MONITOR thread.
+    The stub's waitForAbort() does not block, so that thread would spin against
+    ENV for the rest of the run and then keep the interpreter alive at exit -
+    the suite hangs at the end rather than failing. Set the abort flag first so
+    it stops on its first pass, and join it before restoring.
+    """
+    previous = ENV.abort_requested
+    ENV.abort_requested = True
+    try:
+        return _settle_player()
+    finally:
+        ENV.abort_requested = previous
+
+
 def import_window_module(name):
     """
     Import a module under `lib.windows.` and hand it back.
 
-    Anything in lib/windows/ pulls in lib.player, which builds PLAYER at import
-    time and starts a non-daemon PLAYER:MONITOR thread. The stub's
-    waitForAbort() does not block, so that thread would spin against ENV for the
-    rest of the run and then keep the interpreter alive at exit. Set the abort
-    flag first so it stops on its first pass, and join it before restoring.
+    Anything in lib/windows/ pulls in lib.player, so the same monitor thread
+    caveat as import_player() applies.
     """
     previous = ENV.abort_requested
     ENV.abort_requested = True
     try:
         module = importlib.import_module(name)
-        from lib import player
-        thread = getattr(player.PLAYER, "thread", None)
-        if thread is not None:
-            thread.join(timeout=30)
-            assert not thread.is_alive(), "PLAYER:MONITOR did not stop"
+        _settle_player()
     finally:
         ENV.abort_requested = previous
     return module

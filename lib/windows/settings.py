@@ -1063,6 +1063,21 @@ class Settings(object):
                       )
                 ),
                 BoolSetting('gdm_discovery', T(32042, 'Server Discovery (GDM)'), False),
+                BoolSetting('companion',
+                            T(35119, 'Plex Companion (control from the Plex app)'), False)
+                .description(
+                    T(35120, "Lets the Plex app on a phone or tablet see this device and cast to "
+                             "it, so you can browse your library on the phone and play it here. The "
+                             "protocol has no password of any kind - anyone who can reach this device "
+                             "on the network can control playback - so it is off unless you turn it "
+                             "on. Needs a restart of the addon.")
+                ),
+                StringSetting('companion_port', T(35121, 'Plex Companion port'), '3005')
+                .description(
+                    T(35122, "The port the Plex app connects to. 3005 is what Plex's own players "
+                             "use; only change it if something else on this device already has that "
+                             "port. Needs a restart of the addon.")
+                ),
                 OptionsSetting(
                     'handle_plexdirect', T(32990), 'ask',
                     (('ask', T(32991)), ('always', T(32035)), ('never', T(32033)))

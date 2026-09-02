@@ -280,7 +280,10 @@ def getPlexHeaders():
             "X-Plex-Client-Identifier": INTERFACE.getGlobal("clientIdentifier"),
             "X-Plex-Platform-Version": INTERFACE.getGlobal("platformVersion", "unknown"),
             "X-Plex-Product": "PM4K",
-            "X-Plex-Provides": not INTERFACE.getPreference("remotecontrol", False) and 'player' or '',
+            # Was gated on a "remotecontrol" preference that is defined nowhere, so it
+            # has only ever evaluated to 'player'. Enabling that preference would have
+            # blanked the header and made the client advertise that it provides nothing.
+            "X-Plex-Provides": 'player',
             "X-Plex-Device": INTERFACE.getGlobal("device"),
             "X-Plex-Device-Vendor": INTERFACE.getGlobal("vendor"),
             "X-Plex-Model": INTERFACE.getGlobal("model"),

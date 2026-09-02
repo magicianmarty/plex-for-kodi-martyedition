@@ -3632,3 +3632,19 @@ msgstr ""
 msgctxt "#35118"
 msgid "Stop seeding and remove"
 msgstr ""
+
+msgctxt "#35119"
+msgid "Plex Companion (control from the Plex app)"
+msgstr ""
+
+msgctxt "#35120"
+msgid "Lets the Plex app on a phone or tablet see this device and cast to it, so you can browse your library on the phone and play it here. The protocol has no password of any kind - anyone who can reach this device on the network can control playback - so it is off unless you turn it on. Needs a restart of the addon."
+msgstr ""
+
+msgctxt "#35121"
+msgid "Plex Companion port"
+msgstr ""
+
+msgctxt "#35122"
+msgid "The port the Plex app connects to. 3005 is what Plex's own players use; only change it if something else on this device already has that port. Needs a restart of the addon."
+msgstr ""
