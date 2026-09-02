@@ -3632,3 +3632,7 @@ msgstr ""
 msgctxt "#35118"
 msgid "Stop seeding and remove"
 msgstr ""
+
+msgctxt "#35119"
+msgid "Refresh"
+msgstr ""

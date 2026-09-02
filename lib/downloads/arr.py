@@ -24,7 +24,12 @@ NOUNS = {
 # trackedDownloadState wins over status: a record can say "completed" while the
 # import that actually puts it in your library has not happened yet, and that
 # gap is exactly the bit worth showing.
-IMPORT_STATES = ("importpending", "importing", "importblocked", "importfailed")
+# Being imported. Deliberately not importBlocked or importFailed: those mean
+# the service has given up - usually because it cannot match the download to
+# anything in its library - and calling that "Importing" tells you something is
+# progressing when it will sit there forever.
+IMPORT_STATES = ("importpending", "importing")
+STUCK_STATES = ("importblocked", "importfailed", "failedpending")
 
 # History is the only place the *arrs say a file actually landed in the library.
 # Matched loosely on the event name rather than the numeric id, because Sonarr
@@ -414,7 +419,11 @@ class ArrClient(object):
                     message = messages[0]
                     break
 
-        if tracked in IMPORT_STATES:
+        if tracked in STUCK_STATES:
+            state = model.FAILED
+            if not message:
+                message = "The service could not import this"
+        elif tracked in IMPORT_STATES:
             state = model.IMPORTING
         elif status in ("paused", "delay"):
             state = model.PAUSED

@@ -3,7 +3,7 @@
         <posx>8</posx>
         <posy>0</posy>
         <width>271</width>
-        <height>{{ vscale(406) }}</height>
+        <height>{{ vscale(374) }}</height>
         <aspectratio align="center" aligny="center">scale</aspectratio>
         <texture fallback="$INFO[ListItem.Property(thumb.fallback)]" background="true">$INFO[ListItem.Icon]</texture>
     </control>
@@ -12,7 +12,7 @@
         <posx>8</posx>
         <posy>0</posy>
         <width>271</width>
-        <height>{{ vscale(406) }}</height>
+        <height>{{ vscale(374) }}</height>
         <texture border="2">script.plex/white-square-rounded.png</texture>
         <colordiffuse>40E5A00D</colordiffuse>
     </control>
@@ -22,7 +22,7 @@
          along on the right, over a scrim so it stays readable on any artwork. -->
     <control type="image">
         <posx>8</posx>
-        <posy>{{ vscale(330) }}</posy>
+        <posy>{{ vscale(298) }}</posy>
         <width>271</width>
         <height>{{ vscale(76) }}</height>
         <texture>script.plex/white-square.png</texture>
@@ -30,7 +30,7 @@
     </control>
     <control type="label">
         <posx>20</posx>
-        <posy>{{ vscale(336) }}</posy>
+        <posy>{{ vscale(304) }}</posy>
         <width>170</width>
         <height>{{ vscale(30) }}</height>
         <font>font10</font>
@@ -42,7 +42,7 @@
     <control type="label">
         <visible>!String.IsEmpty(ListItem.Property(has.progress))</visible>
         <posx>267</posx>
-        <posy>{{ vscale(336) }}</posy>
+        <posy>{{ vscale(304) }}</posy>
         <width>100</width>
         <height>{{ vscale(30) }}</height>
         <font>font12</font>
@@ -53,7 +53,7 @@
     </control>
     <control type="label">
         <posx>20</posx>
-        <posy>{{ vscale(362) }}</posy>
+        <posy>{{ vscale(330) }}</posy>
         <width>247</width>
         <height>{{ vscale(26) }}</height>
         <font>font10</font>
@@ -66,7 +66,7 @@
         <visible>!String.IsEmpty(ListItem.Property(has.progress))</visible>
         <control type="image">
             <posx>8</posx>
-            <posy>{{ vscale(400) }}</posy>
+            <posy>{{ vscale(368) }}</posy>
             <width>271</width>
             <height>{{ vscale(6) }}</height>
             <texture>script.plex/white-square.png</texture>
@@ -74,7 +74,7 @@
         </control>
         <control type="progress">
             <posx>8</posx>
-            <posy>{{ vscale(400) }}</posy>
+            <posy>{{ vscale(368) }}</posy>
             <width>271</width>
             <height>{{ vscale(6) }}</height>
             <info>ListItem.Property(percent)</info>
@@ -84,7 +84,7 @@
 
     <control type="label">
         <posx>8</posx>
-        <posy>{{ vscale(408) }}</posy>
+        <posy>{{ vscale(380) }}</posy>
         <width>271</width>
         <height>{{ vscale(30) }}</height>
         <font>font10</font>
