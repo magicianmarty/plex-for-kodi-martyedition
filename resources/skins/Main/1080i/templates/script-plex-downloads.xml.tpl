@@ -78,7 +78,7 @@
             <label>$ADDON[script.plexmod 35083]</label>
         </control>
         <control type="button" id="203">
-            <width max="160">auto</width>
+            <width max="220">auto</width>
             <height>{{ vscale(48) }}</height>
             <font>font12</font>
             <textcolor>FFEDEDED</textcolor>
@@ -87,7 +87,7 @@
             <textoffsetx>22</textoffsetx>
             <texturefocus colordiffuse="FFE5A00D" border="10">script.plex/white-square-rounded.png</texturefocus>
             <texturenofocus colordiffuse="30FFFFFF" border="10">script.plex/white-square-rounded.png</texturenofocus>
-            <label>$ADDON[script.plexmod 35064]</label>
+            <label>$ADDON[script.plexmod 35119]</label>
         </control>
     </control>
 

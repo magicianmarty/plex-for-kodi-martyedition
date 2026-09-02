@@ -181,6 +181,21 @@ add-on importable — and most of it testable — on a normal machine.
 covered, and the traps: Kodi state snapshotted at import time, module
 singletons, multi-line `.po` entries.
 
+### Seeing what you changed
+
+Kodi's own screenshot fails on Amlogic (`glReadPixels failed`): it renders
+straight to a DRM plane, and `/dev/fb0` holds only the boot splash. So
+[`scripts/screenshot.sh`](scripts/screenshot.sh) asks the CRTC which
+framebuffer it is scanning out, exports it as a dmabuf and brings back a PNG:
+
+```sh
+./scripts/screenshot.sh root@kodi-box shot.png
+```
+
+Worth having: skin work is otherwise guesswork, and reading control properties
+over JSON-RPC tells you the data is right while saying nothing about whether it
+is readable.
+
 CI runs on every push and pull request:
 
 | Workflow | What it does |

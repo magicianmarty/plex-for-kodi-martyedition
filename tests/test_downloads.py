@@ -201,6 +201,36 @@ class SonarrQueueTest(KodiTestCase):
         self.assertEqual(0, item.percent)
         self.assertEqual("1d 2h", item.etaDisplay())
 
+    def test_a_blocked_import_is_not_called_importing(self):
+        """
+        Six rows on a real box claimed "Importing" for hours. They were
+        importBlocked: the service cannot match the download to anything in its
+        library and has given up. Saying "importing" tells you something is
+        progressing when it will sit there forever.
+        """
+        state, message = ArrClient._state({"trackedDownloadState": "importBlocked"})
+        self.assertEqual(model.FAILED, state)
+        self.assertTrue(message)
+
+    def test_a_genuine_import_still_reads_as_importing(self):
+        for tracked in ("importPending", "importing"):
+            state, _message = ArrClient._state({"status": "completed",
+                                                "trackedDownloadState": tracked})
+            self.assertEqual(model.IMPORTING, state, tracked)
+
+    def test_an_orphaned_grab_offers_nothing_it_cannot_do(self):
+        """
+        No seriesId means no series to search again for, so those actions must
+        not be offered - the same records that produced the blocked imports.
+        """
+        client = sonarr({"/api/v3/queue": {"records": [
+            {"id": 1, "title": "Some.Show.S01.2160p", "size": 10, "sizeleft": 0,
+             "status": "completed", "trackedDownloadState": "importBlocked"}]}})
+        item = client.queue()[0]
+        self.assertIsNone(item.parent_id)
+        self.assertEqual("", item.poster)
+        self.assertEqual(model.FAILED, item.state)
+
     def test_a_failing_grab_carries_its_reason(self):
         # No series known, so the row is named from the release: "Unknown
         # Release" rather than "Unknown.Release.1080p".
