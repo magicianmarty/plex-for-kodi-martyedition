@@ -126,7 +126,7 @@ def list_library(handle, kind, letter, start):
             nxt, True)
 
     xbmcplugin.endOfDirectory(handle)
-    set_view()
+    set_view(current_url())
     # After the directory is served, so the page is on screen while this runs.
     # Measured at 0.7s against a warm server and about ten times that cold,
     # which is the case worth keeping off the front of the listing.
@@ -263,7 +263,7 @@ def do_search(handle, query):
     for entry in entries:
         add_entry(handle, entry)
     xbmcplugin.endOfDirectory(handle)
-    set_view()
+    set_view(current_url())
 
 
 def list_hubs(handle):
@@ -298,9 +298,30 @@ def content_for(key):
 WALL_VIEW = 500
 
 
-def set_view():
+def current_url():
+    """The path Kodi asked this process for, as it will report it."""
+    argv = sys.argv
+    return argv[0] + (argv[2] if len(argv) > 2 else '')
+
+
+def set_view(expected):
     if xbmc.getSkinDir() != 'skin.martyedition':
         return
+    # A letter jump is a Container.Update, which re-enters this plugin and
+    # replaces the listing in place. Asking for the view before that listing
+    # is the active one does nothing, and Kodi then settles on whatever it
+    # remembers - the stock list. Waiting for items to exist is not enough:
+    # the previous listing's items are still there, so the wait ends
+    # immediately and the view is set against the page being replaced.
+    monitor = xbmc.Monitor()
+    for _ in range(40):
+        if xbmc.getInfoLabel('Container.FolderPath') == expected:
+            break
+        if monitor.waitForAbort(0.1):
+            return
+    else:
+        return
+    monitor.waitForAbort(0.2)
     xbmc.executebuiltin('Container.SetViewMode({0})'.format(WALL_VIEW))
 
 
@@ -319,7 +340,7 @@ def list_hub(handle, key, title):
     for entry in entries:
         add_entry(handle, entry)
     xbmcplugin.endOfDirectory(handle)
-    set_view()
+    set_view(current_url())
 
 
 def play(handle, rating_key):
