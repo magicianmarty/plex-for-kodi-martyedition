@@ -75,7 +75,13 @@ def section_for(address, token, kind):
 CONTENT_FOR_TYPE = {'movie': 'movies', 'show': 'tvshows'}
 
 
-def list_library(handle, kind, letter, start):
+# Two rows sit above the library in the container: the parent entry Kodi puts
+# at the top of every plugin listing, and this add-on's own Search row. The
+# alphabet's jump positions have to count both.
+PARENT_ITEMS = 2
+
+
+def list_library(handle, kind):
     from lib import plexhubs
 
     address, token = connection()
@@ -85,51 +91,38 @@ def list_library(handle, kind, letter, start):
         return
 
     xbmcplugin.setContent(handle, CONTENT_FOR_TYPE.get(kind, 'videos'))
-    xbmcplugin.setPluginCategory(
-        handle, section['title'] + (' - ' + letter if letter else ''))
+    xbmcplugin.setPluginCategory(handle, section['title'])
 
-    base = 'plugin://{0}/library?{1}'.format(
-        ADDON_ID, urlencode({'type': kind}))
-    # The skin builds the A-Z bar from these; it cannot work out the path on
-    # its own, and the letters that exist differ per library.
-    xbmcplugin.setProperty(handle, 'letter_base', base + '&letter=')
-    xbmcplugin.setProperty(handle, 'letter_all', base)
-    xbmcplugin.setProperty(handle, 'letter_current', letter or '')
+    # The whole library in one listing. Paging it meant the alphabet could only
+    # ever reach the page you were on, and a letter had to re-fetch to show
+    # anything - so jumping to Z left you in a listing containing only Z.
+    items, _total = plexhubs.section_items(address, token, section['key'])
+    xbmcplugin.setProperty(handle, 'total_label', str(len(items)))
+    xbmcplugin.setProperty(handle, 'alphabet', '1')
 
     item = xbmcgui.ListItem(label='Search {0}'.format(section['title']))
     item.setArt({'icon': 'DefaultAddonsSearch.png'})
     xbmcplugin.addDirectoryItem(handle, search_uri(), item, True)
 
-    items, total = plexhubs.section_items(
-        address, token, section['key'], letter=letter, start=start,
-        size=plexhubs.PAGE)
-    # Container.NumItems counts this page plus its own Search and Next rows,
-    # which is why a 1368-title library reported 102 in the header.
-    xbmcplugin.setProperty(handle, 'total_label', '{0} of {1}'.format(
-        min(start + len(items), total), total))
-
     cache = load_badges()
     missing = apply_badges(items, cache)
-    for entry in items:
-        add_entry(handle, entry)
 
-    if start + len(items) < total:
-        nxt = xbmcgui.ListItem(label='Next  ({0} of {1})'.format(
-            start + len(items), total))
-        nxt.setArt({'icon': 'DefaultFolderBack.png'})
-        params = {'type': kind, 'start': start + plexhubs.PAGE}
-        if letter:
-            params['letter'] = letter
-        xbmcplugin.addDirectoryItem(
-            handle,
-            'plugin://{0}/library?{1}'.format(ADDON_ID, urlencode(params)),
-            nxt, True)
+    # Where each letter starts, so the skin can jump to it rather than filter
+    # to it. Offset by the parent entry Kodi puts at the top of every plugin
+    # listing, which occupies position zero.
+    seen = {}
+    for index, entry in enumerate(items):
+        first = (entry['sort_title'] or '?')[0].upper()
+        if not first.isalpha():
+            first = '#'
+        seen.setdefault(first, index + PARENT_ITEMS)
+        add_entry(handle, entry)
+    for name, index in seen.items():
+        xbmcplugin.setProperty(handle, 'letter_index_' + name, str(index))
 
     xbmcplugin.endOfDirectory(handle)
     set_view(current_url())
     # After the directory is served, so the page is on screen while this runs.
-    # Measured at 0.7s against a warm server and about ten times that cold,
-    # which is the case worth keeping off the front of the listing.
     if missing:
         fill_badges(address, token, missing, cache)
 
@@ -399,9 +392,7 @@ def main():
         if 'play' in params:
             play(handle, params['play'])
         elif path.endswith('/library'):
-            list_library(handle, params.get('type', 'movie'),
-                         params.get('letter', ''),
-                         int(params.get('start', 0) or 0))
+            list_library(handle, params.get('type', 'movie'))
         elif path.endswith('/search'):
             do_search(handle, params.get('q', ''))
         elif 'hub' in params:

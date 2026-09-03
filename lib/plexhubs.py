@@ -181,6 +181,9 @@ def item_details(address, token, entry):
 
     return {
         'rating_key': str(entry.get('ratingKey') or ''),
+        # Plex sorts by titleSort, so "The Princess Bride" files under P. The
+        # alphabet has to agree with the order it is jumping into.
+        'sort_title': entry.get('titleSort') or title,
         'year': str(entry.get('year') or ''),
         'quality': (resolution + 'p') if resolution.isdigit() else resolution.upper(),
         'audio': 'ATMOS' if 'atmos' in (media.get('audioProfile') or '') else '',
@@ -310,14 +313,14 @@ def letters(address, token, section):
             for d in (data.get('MediaContainer', {}).get('Directory') or ())]
 
 
-def section_items(address, token, section, letter=None, start=0, size=PAGE):
+def section_items(address, token, section, letter=None, start=0, size=None):
     """
-    A page of a library, sorted by title.
+    A library, sorted by title.
 
-    A letter narrows it to that bucket, which is what the alphabet down the
-    side of the Plex app does. The bucket keys are single characters and one
-    of them is '#', so the path has to be quoted - unquoted it reads as a URL
-    fragment and the request arrives unauthenticated.
+    size None fetches the lot. A letter narrows it to that bucket; the bucket
+    keys are single characters and one of them is '#', so the path has to be
+    quoted - unquoted it reads as a URL fragment and the request arrives
+    unauthenticated.
     """
     if letter:
         path = '/library/sections/{0}/firstCharacter/{1}'.format(
@@ -325,10 +328,12 @@ def section_items(address, token, section, letter=None, start=0, size=PAGE):
     else:
         path = '/library/sections/{0}/all'.format(section)
 
-    data = get_json(address, token, path,
-                    {'sort': 'titleSort',
-                     'X-Plex-Container-Start': start,
-                     'X-Plex-Container-Size': size})
+    params = {'sort': 'titleSort'}
+    if size is not None:
+        params['X-Plex-Container-Start'] = start
+        params['X-Plex-Container-Size'] = size
+
+    data = get_json(address, token, path, params)
     container = data.get('MediaContainer', {})
     items = [item_details(address, token, entry)
              for entry in (container.get('Metadata') or ())]
