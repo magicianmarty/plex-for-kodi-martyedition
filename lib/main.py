@@ -124,6 +124,42 @@ exit_timer = threading.Timer(util.addonSettings.maxShutdownWait, hardExit)
 exit_timer.name = 'HARDEXIT-TIMER'
 
 
+def playByKey(rating_key, resume=True):
+    """
+    Play one library item with this add-on's player and nothing else.
+
+    The skin hands playback over for Plex content so it gets this player
+    rather than Kodi's, which means no home screen, no section browsing and no
+    post-play UI - just the boot needed to resolve the item and play it.
+    """
+    from lib import plex, util
+    from lib.windows import videoplayer
+    from plexnet import plexapp
+
+    util.setGlobalProperty('is_active', '1')
+    try:
+        # local_mode skips the plex.tv round trip and goes straight at the
+        # stored server, which is most of the wait when starting cold.
+        if not plex.init(local=util.getSetting('local_mode', False)):
+            util.LOG('playByKey: could not initialise, giving up')
+            return
+
+        server = plexapp.SERVERMANAGER.selectedServer
+        if not server:
+            util.LOG('playByKey: no server selected')
+            return
+
+        video = server.getObject('/library/metadata/{0}'.format(rating_key))
+        if not video:
+            util.LOG('playByKey: nothing at {0}', rating_key)
+            return
+
+        util.DEBUG_LOG('playByKey: playing {0}', rating_key)
+        videoplayer.play(video=video, resume=resume)
+    finally:
+        util.setGlobalProperty('is_active', '')
+
+
 def main(force_render=False):
     global BACKGROUND
 

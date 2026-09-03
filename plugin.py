@@ -24,8 +24,7 @@ except ImportError:
     from urlparse import parse_qsl, urlsplit
     from urllib import quote, urlencode
 
-from lib.kodi_util import ensureHome, xbmc
-
+import xbmc
 import xbmcaddon
 import xbmcgui
 import xbmcplugin
@@ -35,16 +34,39 @@ ADDON_ID = 'script.plexmod'
 SERVER_SETTING = 'None.PlexServerManager'
 
 
+# plexhubs needs nothing from the lib package - only json and urllib - so it
+# is loaded straight from its file. Importing it as lib.plexhubs would run
+# lib/__init__.py first and drag requests and plexnet in behind it.
+_PLEXHUBS = None
+
+
+def plexhubs():
+    global _PLEXHUBS
+    if _PLEXHUBS is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'lib', 'plexhubs.py')
+        spec = importlib.util.spec_from_file_location('plexhubs', path)
+        _PLEXHUBS = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_PLEXHUBS)
+    return _PLEXHUBS
+
+
 def launch():
     """What this entry point has always done."""
+    # Imported here, not at the top. Importing anything from lib runs the
+    # package __init__, which pulls in requests and the whole bundled plexnet
+    # tree - seconds of import on this hardware, paid on every listing and
+    # every play, for something only launching needs.
+    from lib.kodi_util import ensureHome
     ensureHome()
     xbmc.executebuiltin('RunScript(script.plexmod,fromplugin)')
 
 
 def connection():
-    from lib import plexhubs
+    plexhubs_ = plexhubs()
     value = xbmcaddon.Addon(ADDON_ID).getSetting(SERVER_SETTING)
-    return plexhubs.connection(value)
+    return plexhubs_.connection(value)
 
 
 def uri(**params):
@@ -65,8 +87,8 @@ YOUTUBE_SEARCH = 'plugin://plugin.video.youtube/kodion/search/query/?q={0}'
 # add-on resolves it. Hard-coding "Movies is section 3" would be true of
 # exactly this one server.
 def section_for(address, token, kind):
-    from lib import plexhubs
-    for section in plexhubs.sections(address, token):
+    plexhubs_ = plexhubs()
+    for section in plexhubs_.sections(address, token):
         if section['type'] == kind:
             return section
     return None
@@ -82,7 +104,7 @@ PARENT_ITEMS = 2
 
 
 def list_library(handle, kind):
-    from lib import plexhubs
+    plexhubs_ = plexhubs()
 
     address, token = connection()
     section = section_for(address, token, kind)
@@ -96,7 +118,7 @@ def list_library(handle, kind):
     # The whole library in one listing. Paging it meant the alphabet could only
     # ever reach the page you were on, and a letter had to re-fetch to show
     # anything - so jumping to Z left you in a listing containing only Z.
-    items, _total = plexhubs.section_items(address, token, section['key'])
+    items, _total = plexhubs_.section_items(address, token, section['key'])
     xbmcplugin.setProperty(handle, 'total_label', str(len(items)))
     xbmcplugin.setProperty(handle, 'alphabet', '1')
 
@@ -178,9 +200,9 @@ def apply_badges(entries, cache):
 
 
 def fill_badges(address, token, entries, cache):
-    from lib import plexhubs
-    plexhubs.add_ranges(address, token, entries)
-    plexhubs.add_child_quality(address, token, entries)
+    plexhubs_ = plexhubs()
+    plexhubs_.add_ranges(address, token, entries)
+    plexhubs_.add_child_quality(address, token, entries)
     for entry in entries:
         cache[entry['rating_key']] = {
             field: entry[field] for field in BADGE_FIELDS
@@ -247,7 +269,7 @@ def add_entry(handle, entry):
 
 
 def do_search(handle, query):
-    from lib import plexhubs
+    plexhubs_ = plexhubs()
 
     if not query:
         query = xbmcgui.Dialog().input(
@@ -267,8 +289,8 @@ def do_search(handle, query):
     xbmcplugin.addDirectoryItem(
         handle, YOUTUBE_SEARCH.format(quote(query.encode('utf-8'))), item, True)
 
-    entries = plexhubs.add_ranges(
-        address, token, plexhubs.search(address, token, query))
+    entries = plexhubs_.add_ranges(
+        address, token, plexhubs_.search(address, token, query))
     for entry in entries:
         add_entry(handle, entry)
     xbmcplugin.endOfDirectory(handle)
@@ -276,10 +298,10 @@ def do_search(handle, query):
 
 
 def list_hubs(handle):
-    from lib import plexhubs
+    plexhubs_ = plexhubs()
     address, token = connection()
     xbmcplugin.setContent(handle, 'videos')
-    for hub in plexhubs.hubs(address, token):
+    for hub in plexhubs_.hubs(address, token):
         item = xbmcgui.ListItem(label=hub['title'])
         item.setArt({'icon': 'DefaultFolder.png'})
         xbmcplugin.addDirectoryItem(
@@ -335,13 +357,13 @@ def set_view(expected):
 
 
 def list_hub(handle, key, title):
-    from lib import plexhubs
+    plexhubs_ = plexhubs()
     address, token = connection()
     xbmcplugin.setContent(handle, content_for(key))
     if title:
         xbmcplugin.setPluginCategory(handle, title)
 
-    entries = plexhubs.hub_items(address, token, key)
+    entries = plexhubs_.hub_items(address, token, key)
     cache = load_badges()
     missing = apply_badges(entries, cache)
     if missing:
@@ -352,10 +374,34 @@ def list_hub(handle, key, title):
     set_view(current_url())
 
 
+# Plex content plays with the Plex player. Kodi's own player gets a bare
+# stream and none of what this add-on knows about the item: no resume dialog,
+# no BIF thumbnails while seeking, no subtitle picker, and nothing reported
+# back to the server about what was watched.
+PLEX_PLAYER_SETTING = 'plugin.use_plex_player'
+
+
+def use_plex_player():
+    return xbmcaddon.Addon(ADDON_ID).getSetting(PLEX_PLAYER_SETTING) != 'false'
+
+
 def play(handle, rating_key):
-    from lib import plexhubs
+    if use_plex_player():
+        # Hand off, then tell Kodi this was not resolved, because the add-on
+        # is doing the playing. Kodi logs that as a failure; the viewer sees
+        # nothing because the Plex player takes the screen straight after.
+        xbmc.executebuiltin('RunScript({0},play,{1})'.format(
+            ADDON_ID, rating_key))
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+
+    play_with_kodi(handle, rating_key)
+
+
+def play_with_kodi(handle, rating_key):
+    plexhubs_ = plexhubs()
     address, token = connection()
-    url = plexhubs.stream_url(address, token, rating_key)
+    url = plexhubs_.stream_url(address, token, rating_key)
     if not url:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
@@ -363,7 +409,7 @@ def play(handle, rating_key):
     # The resolved item is what the player OSD reads. Handing over a bare path
     # left it with nothing to show, so the OSD titled the film 'hubs' - the
     # name of the plugin route - with no artwork, plot or runtime.
-    entry = plexhubs.metadata(address, token, rating_key)
+    entry = plexhubs_.metadata(address, token, rating_key)
     item = xbmcgui.ListItem(label=entry['label'] if entry else '', path=url)
     if entry:
         item.setArt({

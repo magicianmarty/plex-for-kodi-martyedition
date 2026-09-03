@@ -1,4 +1,7 @@
 # coding=utf-8
+import base64
+import json
+
 from kodi_six import xbmc
 from .settings_util import getSetting
 from .properties_core import _setGlobalProperty
@@ -72,6 +75,26 @@ class UtilityMonitor(xbmc.Monitor, signalsmixin.SignalsMixin):
             return
 
         LOG("Notification: {} {} {}".format(sender, method, data))
+        if sender == 'script.plexmod' and method.endswith('PLAY'):
+            # Already running: play straight away rather than paying for a
+            # second boot. data arrives as base64-encoded JSON from NotifyAll.
+            try:
+                payload = json.loads(base64.b64decode(data).decode('utf-8'))
+                key = payload.get('key')
+            except Exception:
+                LOG('PLAY notification: could not read {0!r}'.format(data))
+                return
+            if not key:
+                return
+            from .windows import opener
+            from plexnet import plexapp
+            server = plexapp.SERVERMANAGER.selectedServer
+            video = server and server.getObject(
+                '/library/metadata/{0}'.format(key))
+            if video:
+                opener.open(video)
+            return
+
         if sender == 'script.plexmod' and method.endswith('RESTORE'):
             from .windows import kodigui, windowutils
 

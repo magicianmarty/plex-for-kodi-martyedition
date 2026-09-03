@@ -24,6 +24,35 @@ kiosk_always = False
 boot_delay = False
 skip_ensure_last_used = False
 argvlen = len(sys.argv)
+
+# RunScript(script.plexmod, play, <ratingKey>) plays one item with this
+# add-on's player. It is how the skin hands Plex playback over instead of
+# resolving a stream URL for Kodi's own player.
+play_key = None
+if argvlen > 2 and sys.argv[1] == 'play':
+    play_key = sys.argv[2]
+
+if play_key:
+    if getGlobalProperty('running'):
+        # Already up: let the running instance do it, no second boot.
+        import base64
+        import json as _json
+        payload = base64.b64encode(
+            _json.dumps({'key': play_key}).encode('utf-8')).decode('utf-8')
+        log('Main: script.plexmod: handing {0} to the running instance'.format(
+            play_key))
+        xbmc.executebuiltin('NotifyAll({0},{1},{2})'.format(
+            'script.plexmod', 'PLAY', payload))
+        sys.exit(0)
+
+    try:
+        with SingleInstance():
+            from lib import main as _main_module
+            _main_module.playByKey(play_key)
+    except SingleInstanceException:
+        log('Main: script.plexmod: already running, cannot play')
+    sys.exit(0)
+
 if argvlen > 1:
     try:
         from_kiosk = int(sys.argv[1]) > 0
