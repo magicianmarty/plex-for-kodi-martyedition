@@ -182,11 +182,15 @@ def _returnWhereWeCameFrom():
     window.clearProperty('plexmod.return_path')
 
     if origin == '10025' and path:
-        util.DEBUG_LOG('playByKey: back to {0}', path)
-        xbmc.executebuiltin('ReplaceWindow(Videos,{0},return)'.format(path))
+        target = 'ReplaceWindow(Videos,{0},return)'.format(path)
     else:
-        util.DEBUG_LOG('playByKey: back to the home screen')
-        xbmc.executebuiltin('ReplaceWindow(Home)')
+        target = 'ReplaceWindow(Home)'
+
+    # Scheduled, not immediate. Kodi puts the screen back on Programs - where
+    # this add-on was launched from - as the script exits, and that happens
+    # after anything the script itself does. The alarm fires once it is gone.
+    util.DEBUG_LOG('playByKey: returning with {0}', target)
+    xbmc.executebuiltin('AlarmClock(plexreturn,{0},00:02,silent)'.format(target))
 
 
 def main(force_render=False):

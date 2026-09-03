@@ -113,6 +113,7 @@ def list_library(handle, kind):
         return
 
     xbmcplugin.setContent(handle, CONTENT_FOR_TYPE.get(kind, 'videos'))
+    remember_origin()
     xbmcplugin.setPluginCategory(handle, section['title'])
 
     # The whole library in one listing. Paging it meant the alphabet could only
@@ -283,6 +284,7 @@ def do_search(handle, query):
     address, token = connection()
     xbmcplugin.setContent(handle, 'videos')
     xbmcplugin.setPluginCategory(handle, 'Search: ' + query)
+    remember_origin()
 
     item = xbmcgui.ListItem(label='YouTube results for "{0}"'.format(query))
     item.setArt({'icon': 'DefaultAddonVideo.png'})
@@ -360,6 +362,7 @@ def list_hub(handle, key, title):
     plexhubs_ = plexhubs()
     address, token = connection()
     xbmcplugin.setContent(handle, content_for(key))
+    remember_origin()
     if title:
         xbmcplugin.setPluginCategory(handle, title)
 
@@ -381,21 +384,27 @@ def list_hub(handle, key, title):
 PLEX_PLAYER_SETTING = 'plugin.use_plex_player'
 
 
+def remember_origin():
+    """
+    Note where this listing is being shown, so playback can come back to it.
+
+    Recorded here rather than when something is played: by then Kodi has
+    already switched to its fullscreen video window, and the origin came out
+    as the player rather than the screen the viewer was on.
+    """
+    window = xbmcgui.Window(10000)
+    window.setProperty('plexmod.return_window',
+                       str(xbmcgui.getCurrentWindowId()))
+    window.setProperty('plexmod.return_path',
+                       xbmc.getInfoLabel('Container.FolderPath') or '')
+
+
 def use_plex_player():
     return xbmcaddon.Addon(ADDON_ID).getSetting(PLEX_PLAYER_SETTING) != 'false'
 
 
 def play(handle, rating_key):
     if use_plex_player():
-        # Remember where this was started from. The add-on exits onto whatever
-        # Kodi has underneath otherwise, which is its own file list rather than
-        # the skin the viewer was in.
-        window = xbmcgui.Window(10000)
-        window.setProperty('plexmod.return_window',
-                           str(xbmcgui.getCurrentWindowId()))
-        window.setProperty('plexmod.return_path',
-                           xbmc.getInfoLabel('Container.FolderPath') or '')
-
         # Hand off, then tell Kodi this was not resolved, because the add-on
         # is doing the playing. Kodi logs that as a failure; the viewer sees
         # nothing because the Plex player takes the screen straight after.
