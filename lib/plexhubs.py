@@ -215,6 +215,14 @@ def image_url(address, token, path):
     return '{0}{1}?X-Plex-Token={2}'.format(address, path, quote(token))
 
 
+def metadata(address, token, rating_key):
+    """One item by key, flattened the same way a listing is."""
+    data = get_json(address, token, '/library/metadata/' + str(rating_key))
+    for entry in (data.get('MediaContainer', {}).get('Metadata') or ()):
+        return item_details(address, token, entry)
+    return None
+
+
 def stream_url(address, token, rating_key):
     """
     A playable URL for one item.

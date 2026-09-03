@@ -356,8 +356,34 @@ def play(handle, rating_key):
     from lib import plexhubs
     address, token = connection()
     url = plexhubs.stream_url(address, token, rating_key)
-    item = xbmcgui.ListItem(path=url)
-    xbmcplugin.setResolvedUrl(handle, bool(url), item)
+    if not url:
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+
+    # The resolved item is what the player OSD reads. Handing over a bare path
+    # left it with nothing to show, so the OSD titled the film 'hubs' - the
+    # name of the plugin route - with no artwork, plot or runtime.
+    entry = plexhubs.metadata(address, token, rating_key)
+    item = xbmcgui.ListItem(label=entry['label'] if entry else '', path=url)
+    if entry:
+        item.setArt({
+            'thumb': entry['thumb'],
+            'poster': entry['poster'],
+            'landscape': entry['landscape'],
+            'fanart': entry['art'],
+        })
+        info = item.getVideoInfoTag()
+        info.setTitle(entry['label'])
+        info.setPlot(entry['plot'])
+        if entry['year'].isdigit():
+            info.setYear(int(entry['year']))
+        if entry['duration']:
+            info.setDuration(entry['duration'])
+        if entry['genres']:
+            info.setGenres(entry['genres'])
+        if entry['show']:
+            info.setTvShowTitle(entry['show'])
+    xbmcplugin.setResolvedUrl(handle, True, item)
 
 
 def main():
