@@ -166,6 +166,7 @@ def item_details(address, token, entry):
 
     return {
         'rating_key': str(entry.get('ratingKey') or ''),
+        'year': str(entry.get('year') or ''),
         'quality': (resolution + 'p') if resolution.isdigit() else resolution.upper(),
         'audio': 'ATMOS' if 'atmos' in (media.get('audioProfile') or '') else '',
         'range': '',

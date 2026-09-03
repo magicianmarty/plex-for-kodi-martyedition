@@ -94,6 +94,8 @@ def list_hub(handle, key, title):
         info = item.getVideoInfoTag()
         info.setTitle(entry['label'])
         info.setPlot(entry['plot'])
+        if entry['year'].isdigit():
+            info.setYear(int(entry['year']))
         if entry['duration']:
             info.setDuration(entry['duration'])
         # Resume, so "Continue Watching" continues rather than restarts.
