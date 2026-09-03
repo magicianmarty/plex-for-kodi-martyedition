@@ -201,7 +201,7 @@ def add_entry(handle, entry):
     item.setArt({
         'thumb': entry['thumb'],
         'icon': entry['thumb'],
-        'poster': entry['thumb'],
+        'poster': entry['poster'],
         'landscape': entry['landscape'],
         'fanart': entry['art'],
     })
@@ -218,6 +218,22 @@ def add_entry(handle, entry):
     # row can say it without the title having to carry it.
     if entry['show']:
         item.setProperty('Artist', entry['show'])
+    # Composed here rather than in the skin: a skin can only concatenate, so
+    # separators end up stranded when a field is missing.
+    badges = entry['quality'] and ' '.join(
+        f for f in (entry['quality'], entry['range'], entry['audio']) if f)
+    facts = [f for f in (entry['year'], badges, entry['content_rating'],
+                         entry['score'] and entry['score'] + '/10',
+                         ', '.join(entry['genres'])) if f]
+    if facts:
+        item.setProperty('facts_line', '   \u00b7   '.join(facts))
+    people = []
+    if entry['directors']:
+        people.append('Directed by ' + entry['directors'][0])
+    if entry['cast']:
+        people.append(', '.join(entry['cast']))
+    if people:
+        item.setProperty('people_line', '   \u00b7   '.join(people))
     info = item.getVideoInfoTag()
     info.setTitle(entry['label'])
     info.setPlot(entry['plot'])

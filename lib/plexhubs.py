@@ -156,6 +156,21 @@ def item_details(address, token, entry):
     thumb = (entry.get('thumb') or entry.get('grandparentThumb')
              or entry.get('parentThumb') or '')
 
+    # An episode's own thumb is a 16:9 still, which is the wrong shape for a
+    # poster row. The show above it has the poster, so portrait art comes from
+    # there and only falls back to the still when there is no show.
+    if kind in ('episode', 'season'):
+        poster = (entry.get('grandparentThumb') or entry.get('parentThumb')
+                  or thumb)
+    else:
+        poster = thumb
+
+    def tags(name, limit):
+        return [t.get('tag') for t in (entry.get(name) or ())[:limit]
+                if t.get('tag')]
+
+    score = entry.get('rating') or entry.get('audienceRating') or ''
+
     # thumb is a 2:3 poster for movies and shows, but a 16:9 still for
     # episodes. Rows are landscape, and filling a landscape box with a poster
     # crops it to a middle band, so anything poster-shaped uses the backdrop.
@@ -174,7 +189,13 @@ def item_details(address, token, entry):
         'subtitle': subtitle,
         'type': kind,
         'thumb': image_url(address, token, thumb),
+        'poster': image_url(address, token, poster),
         'landscape': image_url(address, token, landscape),
+        'genres': tags('Genre', 3),
+        'cast': tags('Role', 4),
+        'directors': tags('Director', 1),
+        'score': '{0:.1f}'.format(float(score)) if score else '',
+        'content_rating': entry.get('contentRating') or '',
         'art': image_url(address, token, art),
         'plot': entry.get('summary') or '',
         'duration': int(entry.get('duration') or 0) // 1000,
