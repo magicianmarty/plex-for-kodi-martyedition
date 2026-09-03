@@ -156,12 +156,18 @@ def item_details(address, token, entry):
     thumb = (entry.get('thumb') or entry.get('grandparentThumb')
              or entry.get('parentThumb') or '')
 
+    # thumb is a 2:3 poster for movies and shows, but a 16:9 still for
+    # episodes. Rows are landscape, and filling a landscape box with a poster
+    # crops it to a middle band, so anything poster-shaped uses the backdrop.
+    landscape = (thumb if kind == 'episode' else art) or art or thumb
+
     return {
         'rating_key': str(entry.get('ratingKey') or ''),
         'label': label,
         'subtitle': subtitle,
         'type': kind,
         'thumb': image_url(address, token, thumb),
+        'landscape': image_url(address, token, landscape),
         'art': image_url(address, token, art),
         'plot': entry.get('summary') or '',
         'duration': int(entry.get('duration') or 0) // 1000,

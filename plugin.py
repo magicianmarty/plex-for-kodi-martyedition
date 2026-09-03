@@ -73,6 +73,7 @@ def list_hub(handle, key, title):
             'thumb': entry['thumb'],
             'icon': entry['thumb'],
             'poster': entry['thumb'],
+            'landscape': entry['landscape'],
             'fanart': entry['art'],
         })
         item.setProperty('IsPlayable', 'true')
