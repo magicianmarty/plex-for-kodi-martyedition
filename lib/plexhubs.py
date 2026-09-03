@@ -115,9 +115,17 @@ def hubs(address, token):
     return found
 
 
-def hub_items(address, token, key):
-    """What is in one hub."""
-    data = get_json(address, token, key)
+# A home row shows about ten tiles. "Recently Added Movies" on this server is
+# 1368 of them, and fetching the lot to draw ten would make the row too slow
+# to sit on a home screen - which is the whole reason this exists.
+ROW_LIMIT = 30
+
+
+def hub_items(address, token, key, limit=ROW_LIMIT):
+    """What is in one hub, capped to what a row can show."""
+    data = get_json(address, token, key,
+                    {'X-Plex-Container-Start': 0,
+                     'X-Plex-Container-Size': limit})
     container = data.get('MediaContainer', {})
     items = []
     for entry in (container.get('Metadata') or ()):
