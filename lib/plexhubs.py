@@ -242,3 +242,21 @@ def add_ranges(address, token, items):
     for item in items:
         item['range'] = ranges.get(item['rating_key'], '')
     return items
+
+
+# Music hubs come back too. This is a video browser, so they are dropped
+# rather than shown and then failing to play in a video window.
+SEARCH_TYPES = ('movie', 'show', 'season', 'episode')
+
+
+def search(address, token, query, limit=ROW_LIMIT):
+    """Videos matching a query, flattened out of the per-type hubs."""
+    data = get_json(address, token, '/hubs/search',
+                    {'query': query, 'limit': limit})
+    items = []
+    for hub in (data.get('MediaContainer', {}).get('Hub') or ()):
+        if hub.get('type') not in SEARCH_TYPES:
+            continue
+        for entry in (hub.get('Metadata') or ()):
+            items.append(item_details(address, token, entry))
+    return items
