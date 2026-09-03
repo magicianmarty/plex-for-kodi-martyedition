@@ -88,6 +88,11 @@ def list_hub(handle, key, title):
         # Resume, so "Continue Watching" continues rather than restarts.
         if entry['view_offset'] and entry['duration']:
             info.setResumePoint(entry['view_offset'], entry['duration'])
+            # And as a plain property, because a skin needs something it can
+            # test and draw. Whether Kodi derives PercentPlayed for a plugin
+            # item is not something to depend on.
+            item.setProperty('resume_percent', str(
+                int(100 * entry['view_offset'] / entry['duration'])))
         xbmcplugin.addDirectoryItem(
             handle, uri(play=entry['rating_key']), item, False)
     xbmcplugin.endOfDirectory(handle)
