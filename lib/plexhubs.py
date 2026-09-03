@@ -221,14 +221,19 @@ def add_ranges(address, token, items):
     if not keys:
         return items
 
-    try:
-        data = get_json(address, token, '/library/metadata/' + ','.join(keys))
-    except Exception:
-        # A badge is not worth failing a row over.
-        return items
+    entries = []
+    for at in range(0, len(keys), BATCH):
+        chunk = keys[at:at + BATCH]
+        try:
+            data = get_json(address, token,
+                            '/library/metadata/' + ','.join(chunk))
+        except Exception:
+            # A badge is not worth failing a listing over.
+            continue
+        entries.extend(data.get('MediaContainer', {}).get('Metadata') or ())
 
     ranges = {}
-    for entry in (data.get('MediaContainer', {}).get('Metadata') or ()):
+    for entry in entries:
         streams = ((entry.get('Media') or [{}])[0].get('Part') or [{}])[0]
         for stream in (streams.get('Stream') or ()):
             if stream.get('streamType') != 1:
@@ -248,6 +253,11 @@ def add_ranges(address, token, items):
 # rather than shown and then failing to play in a video window.
 SEARCH_TYPES = ('movie', 'show', 'season', 'episode')
 
+# Keys go in the URL, so they cannot all go in one request: a
+# 1368-item library page built a URL the server simply dropped.
+BATCH = 80
+PAGE = 100
+
 
 def search(address, token, query, limit=ROW_LIMIT):
     """Videos matching a query, flattened out of the per-type hubs."""
@@ -260,3 +270,46 @@ def search(address, token, query, limit=ROW_LIMIT):
         for entry in (hub.get('Metadata') or ()):
             items.append(item_details(address, token, entry))
     return items
+
+
+def sections(address, token):
+    """The server's libraries."""
+    data = get_json(address, token, '/library/sections')
+    return [{'key': str(d.get('key') or ''),
+             'type': d.get('type') or '',
+             'title': d.get('title') or ''}
+            for d in (data.get('MediaContainer', {}).get('Directory') or ())]
+
+
+def letters(address, token, section):
+    """The A-Z index for a library, with a count per bucket."""
+    data = get_json(address, token,
+                    '/library/sections/{0}/firstCharacter'.format(section))
+    return [{'title': d.get('title') or '', 'size': int(d.get('size') or 0)}
+            for d in (data.get('MediaContainer', {}).get('Directory') or ())]
+
+
+def section_items(address, token, section, letter=None, start=0, size=PAGE):
+    """
+    A page of a library, sorted by title.
+
+    A letter narrows it to that bucket, which is what the alphabet down the
+    side of the Plex app does. The bucket keys are single characters and one
+    of them is '#', so the path has to be quoted - unquoted it reads as a URL
+    fragment and the request arrives unauthenticated.
+    """
+    if letter:
+        path = '/library/sections/{0}/firstCharacter/{1}'.format(
+            section, quote(letter))
+    else:
+        path = '/library/sections/{0}/all'.format(section)
+
+    data = get_json(address, token, path,
+                    {'sort': 'titleSort',
+                     'X-Plex-Container-Start': start,
+                     'X-Plex-Container-Size': size})
+    container = data.get('MediaContainer', {})
+    items = [item_details(address, token, entry)
+             for entry in (container.get('Metadata') or ())]
+    total = int(container.get('totalSize') or container.get('size') or 0)
+    return items, total

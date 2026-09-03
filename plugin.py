@@ -58,6 +58,70 @@ def search_uri(**params):
 YOUTUBE_SEARCH = 'plugin://plugin.video.youtube/kodion/search/query/?q={0}'
 
 
+# Sections are numbered per server, so the skin asks for a type and the
+# add-on resolves it. Hard-coding "Movies is section 3" would be true of
+# exactly this one server.
+def section_for(address, token, kind):
+    from lib import plexhubs
+    for section in plexhubs.sections(address, token):
+        if section['type'] == kind:
+            return section
+    return None
+
+
+CONTENT_FOR_TYPE = {'movie': 'movies', 'show': 'tvshows'}
+
+
+def list_library(handle, kind, letter, start):
+    from lib import plexhubs
+
+    address, token = connection()
+    section = section_for(address, token, kind)
+    if section is None:
+        xbmcplugin.endOfDirectory(handle, succeeded=False)
+        return
+
+    xbmcplugin.setContent(handle, CONTENT_FOR_TYPE.get(kind, 'videos'))
+    xbmcplugin.setPluginCategory(
+        handle, section['title'] + (' - ' + letter if letter else ''))
+
+    base = 'plugin://{0}/library?{1}'.format(
+        ADDON_ID, urlencode({'type': kind}))
+    # The skin builds the A-Z bar from these; it cannot work out the path on
+    # its own, and the letters that exist differ per library.
+    xbmcplugin.setProperty(handle, 'letter_base', base + '&letter=')
+    xbmcplugin.setProperty(handle, 'letter_all', base)
+    xbmcplugin.setProperty(handle, 'letter_current', letter or '')
+
+    item = xbmcgui.ListItem(label='Search {0}'.format(section['title']))
+    item.setArt({'icon': 'DefaultAddonsSearch.png'})
+    xbmcplugin.addDirectoryItem(handle, search_uri(), item, True)
+
+    items, total = plexhubs.section_items(
+        address, token, section['key'], letter=letter, start=start,
+        size=plexhubs.PAGE)
+    # No HDR/DV badges here. They need a second request per batch of items,
+    # which costs about seven seconds on a page this size - too slow for a
+    # screen you scroll. Resolution and Atmos come free with the listing.
+    for entry in items:
+        add_entry(handle, entry)
+
+    if start + len(items) < total:
+        nxt = xbmcgui.ListItem(label='Next  ({0} of {1})'.format(
+            start + len(items), total))
+        nxt.setArt({'icon': 'DefaultFolderBack.png'})
+        params = {'type': kind, 'start': start + plexhubs.PAGE}
+        if letter:
+            params['letter'] = letter
+        xbmcplugin.addDirectoryItem(
+            handle,
+            'plugin://{0}/library?{1}'.format(ADDON_ID, urlencode(params)),
+            nxt, True)
+
+    xbmcplugin.endOfDirectory(handle)
+    set_view()
+
+
 def add_entry(handle, entry):
     """One Plex item as a playable directory entry."""
     item = xbmcgui.ListItem(label=entry['label'])
@@ -221,6 +285,10 @@ def main():
     try:
         if 'play' in params:
             play(handle, params['play'])
+        elif path.endswith('/library'):
+            list_library(handle, params.get('type', 'movie'),
+                         params.get('letter', ''),
+                         int(params.get('start', 0) or 0))
         elif path.endswith('/search'):
             do_search(handle, params.get('q', ''))
         elif 'hub' in params:
