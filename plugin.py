@@ -14,6 +14,8 @@ ask the server one question would make a home screen row too slow to use.
 
 from __future__ import absolute_import
 
+import json
+import os
 import sys
 
 try:
@@ -27,6 +29,7 @@ from lib.kodi_util import ensureHome, xbmc
 import xbmcaddon
 import xbmcgui
 import xbmcplugin
+import xbmcvfs
 
 ADDON_ID = 'script.plexmod'
 SERVER_SETTING = 'None.PlexServerManager'
@@ -100,9 +103,13 @@ def list_library(handle, kind, letter, start):
     items, total = plexhubs.section_items(
         address, token, section['key'], letter=letter, start=start,
         size=plexhubs.PAGE)
-    # No HDR/DV badges here. They need a second request per batch of items,
-    # which costs about seven seconds on a page this size - too slow for a
-    # screen you scroll. Resolution and Atmos come free with the listing.
+    # Container.NumItems counts this page plus its own Search and Next rows,
+    # which is why a 1368-title library reported 102 in the header.
+    xbmcplugin.setProperty(handle, 'total_label', '{0} of {1}'.format(
+        min(start + len(items), total), total))
+
+    cache = load_badges()
+    missing = apply_badges(items, cache)
     for entry in items:
         add_entry(handle, entry)
 
@@ -120,6 +127,72 @@ def list_library(handle, kind, letter, start):
 
     xbmcplugin.endOfDirectory(handle)
     set_view()
+    # After the directory is served, so the page is on screen while this runs.
+    # Measured at 0.7s against a warm server and about ten times that cold,
+    # which is the case worth keeping off the front of the listing.
+    if missing:
+        fill_badges(address, token, missing, cache)
+
+
+# Badges the listing does not carry are looked up after the directory has
+# already been handed to Kodi, and kept. The page is on screen while that
+# happens, and the next visit has them without asking again.
+BADGE_FIELDS = ('quality', 'range', 'audio')
+
+
+def badge_cache_path():
+    profile = xbmcvfs.translatePath(
+        xbmcaddon.Addon(ADDON_ID).getAddonInfo('profile'))
+    if not xbmcvfs.exists(profile):
+        xbmcvfs.mkdirs(profile)
+    return os.path.join(profile, 'badges.json')
+
+
+def load_badges():
+    try:
+        with open(badge_cache_path(), 'r') as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+
+
+def save_badges(cache):
+    # Bounded, because a big library browsed end to end would otherwise grow
+    # this without limit.
+    if len(cache) > 4000:
+        for key in list(cache)[:len(cache) - 4000]:
+            del cache[key]
+    try:
+        with open(badge_cache_path(), 'w') as handle:
+            json.dump(cache, handle)
+    except Exception as error:
+        xbmc.log('script.plexmod: badge cache write failed: {0!r}'.format(error),
+                 xbmc.LOGWARNING)
+
+
+def apply_badges(entries, cache):
+    """Fill in what is already known, and say which items still need asking."""
+    missing = []
+    for entry in entries:
+        known = cache.get(entry['rating_key'])
+        if known is None:
+            missing.append(entry)
+            continue
+        for field in BADGE_FIELDS:
+            if not entry[field]:
+                entry[field] = known.get(field, '')
+    return missing
+
+
+def fill_badges(address, token, entries, cache):
+    from lib import plexhubs
+    plexhubs.add_ranges(address, token, entries)
+    plexhubs.add_child_quality(address, token, entries)
+    for entry in entries:
+        cache[entry['rating_key']] = {
+            field: entry[field] for field in BADGE_FIELDS
+        }
+    save_badges(cache)
 
 
 def add_entry(handle, entry):
@@ -238,8 +311,11 @@ def list_hub(handle, key, title):
     if title:
         xbmcplugin.setPluginCategory(handle, title)
 
-    entries = plexhubs.add_ranges(address, token,
-                                  plexhubs.hub_items(address, token, key))
+    entries = plexhubs.hub_items(address, token, key)
+    cache = load_badges()
+    missing = apply_badges(entries, cache)
+    if missing:
+        fill_badges(address, token, missing, cache)
     for entry in entries:
         add_entry(handle, entry)
     xbmcplugin.endOfDirectory(handle)

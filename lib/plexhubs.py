@@ -313,3 +313,34 @@ def section_items(address, token, section, letter=None, start=0, size=PAGE):
              for entry in (container.get('Metadata') or ())]
     total = int(container.get('totalSize') or container.get('size') or 0)
     return items, total
+
+
+# A show or season has no media of its own. Its quality is whichever of its
+# episodes you look at, which is one cheap request away - allLeaves for a
+# show, children for a season, both answered in hundredths of a second.
+CHILD_PATHS = {'show': 'allLeaves', 'season': 'children'}
+
+
+def add_child_quality(address, token, items):
+    """Borrow an episode's quality for the shows and seasons above it."""
+    for item in items:
+        if item['quality'] or item['type'] not in CHILD_PATHS:
+            continue
+        try:
+            data = get_json(
+                address, token,
+                '/library/metadata/{0}/{1}'.format(
+                    item['rating_key'], CHILD_PATHS[item['type']]),
+                {'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 1})
+        except Exception:
+            continue
+        for entry in (data.get('MediaContainer', {}).get('Metadata') or ()):
+            media = (entry.get('Media') or [{}])[0]
+            resolution = media.get('videoResolution') or ''
+            if resolution:
+                item['quality'] = ((resolution + 'p') if resolution.isdigit()
+                                   else resolution.upper())
+            if 'atmos' in (media.get('audioProfile') or ''):
+                item['audio'] = 'ATMOS'
+            break
+    return items
