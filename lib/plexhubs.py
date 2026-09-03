@@ -161,8 +161,14 @@ def item_details(address, token, entry):
     # crops it to a middle band, so anything poster-shaped uses the backdrop.
     landscape = (thumb if kind == 'episode' else art) or art or thumb
 
+    media = (entry.get('Media') or [{}])[0]
+    resolution = media.get('videoResolution') or ''
+
     return {
         'rating_key': str(entry.get('ratingKey') or ''),
+        'quality': (resolution + 'p') if resolution.isdigit() else resolution.upper(),
+        'audio': 'ATMOS' if 'atmos' in (media.get('audioProfile') or '') else '',
+        'range': '',
         'label': label,
         'subtitle': subtitle,
         'type': kind,
@@ -201,3 +207,37 @@ def stream_url(address, token, rating_key):
                     return '{0}{1}?X-Plex-Token={2}'.format(
                         address, key, quote(token))
     return ''
+
+
+# Hubs never return stream details - no combination of includeStreams,
+# includeElements or checkFiles brings them back - and HDR and Dolby Vision
+# live on the video stream. Asking per item would be 30 requests a row, so ask
+# for the whole row at once: /library/metadata takes comma-separated keys and
+# answers for all of them in a single round trip.
+def add_ranges(address, token, items):
+    """Fill in the HDR/DV badge, which needs stream detail the hub omits."""
+    keys = [i['rating_key'] for i in items if i.get('rating_key')]
+    if not keys:
+        return items
+
+    try:
+        data = get_json(address, token, '/library/metadata/' + ','.join(keys))
+    except Exception:
+        # A badge is not worth failing a row over.
+        return items
+
+    ranges = {}
+    for entry in (data.get('MediaContainer', {}).get('Metadata') or ()):
+        streams = ((entry.get('Media') or [{}])[0].get('Part') or [{}])[0]
+        for stream in (streams.get('Stream') or ()):
+            if stream.get('streamType') != 1:
+                continue
+            if stream.get('DOVIPresent'):
+                ranges[str(entry.get('ratingKey'))] = 'DV'
+            elif stream.get('colorTrc') in ('smpte2084', 'arib-std-b67'):
+                ranges[str(entry.get('ratingKey'))] = 'HDR'
+            break
+
+    for item in items:
+        item['range'] = ranges.get(item['rating_key'], '')
+    return items

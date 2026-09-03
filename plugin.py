@@ -67,7 +67,9 @@ def list_hub(handle, key, title):
     if title:
         xbmcplugin.setPluginCategory(handle, title)
 
-    for entry in plexhubs.hub_items(address, token, key):
+    entries = plexhubs.add_ranges(address, token,
+                                  plexhubs.hub_items(address, token, key))
+    for entry in entries:
         item = xbmcgui.ListItem(label=entry['label'])
         item.setArt({
             'thumb': entry['thumb'],
@@ -77,6 +79,14 @@ def list_hub(handle, key, title):
             'fanart': entry['art'],
         })
         item.setProperty('IsPlayable', 'true')
+        # One property, not three. An item layout only binds ListItem per row
+        # for image and label controls, so these have to be drawn as a single
+        # label - three separate ones would need a container to lay out, and a
+        # container in an item layout reads the focused row for every tile.
+        badges = ' \u00b7 '.join(
+            entry[name] for name in ('quality', 'range', 'audio') if entry[name])
+        if badges:
+            item.setProperty('badge_line', badges)
         # The channel-equivalent for Plex: which show an episode belongs to,
         # so a row can say it without the title having to carry it.
         if entry['show']:
