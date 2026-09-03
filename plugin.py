@@ -387,6 +387,15 @@ def use_plex_player():
 
 def play(handle, rating_key):
     if use_plex_player():
+        # Remember where this was started from. The add-on exits onto whatever
+        # Kodi has underneath otherwise, which is its own file list rather than
+        # the skin the viewer was in.
+        window = xbmcgui.Window(10000)
+        window.setProperty('plexmod.return_window',
+                           str(xbmcgui.getCurrentWindowId()))
+        window.setProperty('plexmod.return_path',
+                           xbmc.getInfoLabel('Container.FolderPath') or '')
+
         # Hand off, then tell Kodi this was not resolved, because the add-on
         # is doing the playing. Kodi logs that as a failure; the viewer sees
         # nothing because the Plex player takes the screen straight after.

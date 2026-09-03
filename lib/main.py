@@ -155,9 +155,38 @@ def playByKey(rating_key, resume=True):
             return
 
         util.DEBUG_LOG('playByKey: playing {0}', rating_key)
-        videoplayer.play(video=video, resume=resume)
+        # Inside Cron, because the player reaches for util.CRON when playback
+        # resumes and the full boot is what normally starts it. Without it,
+        # un-pausing threw AttributeError on None.
+        with util.Cron(1 / util.addonSettings.tickrate):
+            videoplayer.play(video=video, resume=resume)
     finally:
         util.setGlobalProperty('is_active', '')
+        _returnWhereWeCameFrom()
+
+
+def _returnWhereWeCameFrom():
+    """
+    Put the screen back where playback was started from.
+
+    Without this the add-on exits onto whatever Kodi had underneath, which is
+    its own file list rather than the skin the viewer was using.
+    """
+    import xbmcgui
+    from lib import util
+
+    window = xbmcgui.Window(10000)
+    origin = window.getProperty('plexmod.return_window')
+    path = window.getProperty('plexmod.return_path')
+    window.clearProperty('plexmod.return_window')
+    window.clearProperty('plexmod.return_path')
+
+    if origin == '10025' and path:
+        util.DEBUG_LOG('playByKey: back to {0}', path)
+        xbmc.executebuiltin('ReplaceWindow(Videos,{0},return)'.format(path))
+    else:
+        util.DEBUG_LOG('playByKey: back to the home screen')
+        xbmc.executebuiltin('ReplaceWindow(Home)')
 
 
 def main(force_render=False):
