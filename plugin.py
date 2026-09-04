@@ -148,7 +148,7 @@ def list_library(handle, kind):
     for name, index in seen.items():
         xbmcplugin.setProperty(handle, 'letter_index_' + name, str(index))
 
-    xbmcplugin.endOfDirectory(handle)
+    xbmcplugin.endOfDirectory(handle, cacheToDisc=False)
     set_view(current_url())
     # After the directory is served, so the page is on screen while this runs.
     if missing:
@@ -321,7 +321,7 @@ def do_search(handle, query):
         address, token, plexhubs_.search(address, token, query))
     for entry in entries:
         add_entry(handle, entry)
-    xbmcplugin.endOfDirectory(handle)
+    xbmcplugin.endOfDirectory(handle, cacheToDisc=False)
     set_view(current_url())
 
 
@@ -334,7 +334,7 @@ def list_hubs(handle):
         item.setArt({'icon': 'DefaultFolder.png'})
         xbmcplugin.addDirectoryItem(
             handle, uri(hub=hub['key'], title=hub['title']), item, True)
-    xbmcplugin.endOfDirectory(handle)
+    xbmcplugin.endOfDirectory(handle, cacheToDisc=False)
 
 
 # Kodi picks a view from the content type, and a skin can lay movies out as
@@ -400,7 +400,7 @@ def list_hub(handle, key, title):
     resume_row = 'continueWatching' in key or 'onDeck' in key
     for entry in entries:
         add_entry(handle, entry, resume_row=resume_row)
-    xbmcplugin.endOfDirectory(handle)
+    xbmcplugin.endOfDirectory(handle, cacheToDisc=False)
     set_view(current_url())
 
 
