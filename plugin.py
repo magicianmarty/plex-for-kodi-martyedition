@@ -216,8 +216,8 @@ def fill_badges(address, token, entries, cache):
     save_badges(cache)
 
 
-def add_entry(handle, entry):
-    """One Plex item as a playable directory entry."""
+def add_entry(handle, entry, resume_row=False):
+    """One Plex item as a directory entry."""
     item = xbmcgui.ListItem(label=entry['label'])
     item.setArt({
         'thumb': entry['thumb'],
@@ -272,11 +272,25 @@ def add_entry(handle, entry):
         item.setProperty('resume_percent', str(
             int(100 * entry['view_offset'] / entry['duration'])))
     if use_plex_player():
-        # A folder, not a playable file: selecting it opens the item in the
-        # Plex add-on rather than asking Kodi to play anything.
+        # The action, published on the item. A home row is a widget: clicking
+        # a folder there can send Kodi off to open its own Videos window at
+        # that path before the add-on gets the screen. The skin runs this
+        # instead, so nothing navigates.
+        # A row of things you are part way through is asking to be resumed,
+        # not browsed, so those play whatever the page setting says.
+        paged = wants_page(entry['type']) and not resume_row
+        item.setProperty('marty_click', 'RunScript({0},{1},{2})'.format(
+            ADDON_ID, 'open' if paged else 'play', entry['rating_key']))
+
+        # Still a folder rather than a playable file, for the browse window,
+        # where a click navigates and a refused directory simply stays put.
         xbmcplugin.addDirectoryItem(
             handle, open_uri(entry['rating_key'], entry['type']), item, True)
     else:
+        # Kodi's player instead. The rows still need an action published or
+        # they would have nothing to do when clicked.
+        item.setProperty('marty_click', 'PlayMedia({0})'.format(
+            uri(play=entry['rating_key'])))
         xbmcplugin.addDirectoryItem(
             handle, uri(play=entry['rating_key']), item, False)
 
@@ -383,8 +397,9 @@ def list_hub(handle, key, title):
     missing = apply_badges(entries, cache)
     if missing:
         fill_badges(address, token, missing, cache)
+    resume_row = 'continueWatching' in key or 'onDeck' in key
     for entry in entries:
-        add_entry(handle, entry)
+        add_entry(handle, entry, resume_row=resume_row)
     xbmcplugin.endOfDirectory(handle)
     set_view(current_url())
 
