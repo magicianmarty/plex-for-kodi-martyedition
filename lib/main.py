@@ -185,11 +185,18 @@ def _returnWhereWeCameFrom():
     else:
         target = 'ReplaceWindow(Home)'
 
-    # Scheduled, not immediate. Kodi puts the screen back on Programs - where
-    # this add-on was launched from - as the script exits, and that happens
-    # after anything the script itself does. The alarm fires once it is gone.
-    util.DEBUG_LOG('playByKey: returning with {0}', target)
-    xbmc.executebuiltin('AlarmClock(plexreturn,{0},00:02,silent)'.format(target))
+    # Scheduled, not immediate. Kodi restores its own window history as the
+    # script exits - Programs, or whatever media window was last open - and
+    # that happens after anything the script itself does.
+    #
+    # Twice, a second apart. One shot at two seconds landed after Kodi's
+    # restore was already on screen, so the viewer saw the Videos window for a
+    # moment before it corrected. The early alarm usually beats the restore
+    # being drawn; the later one is there for when it does not.
+    util.DEBUG_LOG('openByKey: returning with {0}', target)
+    for delay in ('00:01', '00:03'):
+        xbmc.executebuiltin('AlarmClock(plexreturn{0},{1},{2},silent)'.format(
+            delay[-1], target, delay))
 
 
 def main(force_render=False):
