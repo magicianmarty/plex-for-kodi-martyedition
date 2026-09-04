@@ -77,6 +77,11 @@ def search_uri(**params):
     return 'plugin://{0}/search?{1}'.format(ADDON_ID, urlencode(params))
 
 
+def open_uri(rating_key, kind):
+    return 'plugin://{0}/open?{1}'.format(
+        ADDON_ID, urlencode({'key': rating_key, 'type': kind}))
+
+
 # One prompt, both libraries. Plex answers inline; YouTube is one click away
 # on the same query, because merging two plugins' results into a single Kodi
 # listing is not something a plugin can do.
@@ -221,7 +226,8 @@ def add_entry(handle, entry):
         'landscape': entry['landscape'],
         'fanart': entry['art'],
     })
-    item.setProperty('IsPlayable', 'true')
+    if not use_plex_player():
+        item.setProperty('IsPlayable', 'true')
     # One property, not three. An item layout only binds ListItem per row for
     # image and label controls, so these have to be drawn as a single label -
     # three separate ones would need a container to lay them out, and a
@@ -265,8 +271,14 @@ def add_entry(handle, entry):
         # something to depend on.
         item.setProperty('resume_percent', str(
             int(100 * entry['view_offset'] / entry['duration'])))
-    xbmcplugin.addDirectoryItem(
-        handle, uri(play=entry['rating_key']), item, False)
+    if use_plex_player():
+        # A folder, not a playable file: selecting it opens the item in the
+        # Plex add-on rather than asking Kodi to play anything.
+        xbmcplugin.addDirectoryItem(
+            handle, open_uri(entry['rating_key'], entry['type']), item, True)
+    else:
+        xbmcplugin.addDirectoryItem(
+            handle, uri(play=entry['rating_key']), item, False)
 
 
 def do_search(handle, query):
@@ -377,6 +389,41 @@ def list_hub(handle, key, title):
     set_view(current_url())
 
 
+# Whether selecting something opens its page or just plays it. 'always' is the
+# Plex app's behaviour; 'tv' gives the page only where there is a choice to
+# make - which episode - and lets a film start on one press; 'never' keeps the
+# old one-press-plays behaviour throughout.
+ITEM_PAGE_SETTING = 'plugin.item_page'
+PAGED_TYPES = ('show', 'season', 'episode')
+
+
+def wants_page(kind):
+    mode = xbmcaddon.Addon(ADDON_ID).getSetting(ITEM_PAGE_SETTING) or 'always'
+    if mode == 'never':
+        return False
+    if mode == 'tv':
+        return kind in PAGED_TYPES
+    return True
+
+
+def open_item(handle, rating_key, kind):
+    """
+    Hand an item to the Plex add-on and get out of the way.
+
+    Ending the directory as failed is deliberate. Kodi shows a dialog when
+    *playback* is refused - which is what the previous approach did, and what
+    put "Playback failed" on screen - but a directory that refuses only writes
+    a line to the log, leaves the viewer where they were, and lets the add-on
+    open over the top.
+    """
+    remember_origin()
+    # 'open' shows the item's page; 'play' starts it straight away.
+    command = 'open' if wants_page(kind) else 'play'
+    xbmc.executebuiltin('RunScript({0},{1},{2})'.format(
+        ADDON_ID, command, rating_key))
+    xbmcplugin.endOfDirectory(handle, succeeded=False)
+
+
 # Plex content plays with the Plex player. Kodi's own player gets a bare
 # stream and none of what this add-on knows about the item: no resume dialog,
 # no BIF thumbnails while seeking, no subtitle picker, and nothing reported
@@ -481,6 +528,8 @@ def main():
     try:
         if 'play' in params:
             play(handle, params['play'])
+        elif path.endswith('/open'):
+            open_item(handle, params.get('key', ''), params.get('type', ''))
         elif path.endswith('/library'):
             list_library(handle, params.get('type', 'movie'))
         elif path.endswith('/search'):

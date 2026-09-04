@@ -124,16 +124,20 @@ exit_timer = threading.Timer(util.addonSettings.maxShutdownWait, hardExit)
 exit_timer.name = 'HARDEXIT-TIMER'
 
 
-def playByKey(rating_key, resume=True):
+def openByKey(rating_key, auto_play=False):
     """
-    Play one library item with this add-on's player and nothing else.
+    Open one library item in this add-on and nothing else.
 
-    The skin hands playback over for Plex content so it gets this player
-    rather than Kodi's, which means no home screen, no section browsing and no
-    post-play UI - just the boot needed to resolve the item and play it.
+    The skin hands Plex content over so it gets these screens rather than
+    Kodi's: a movie opens its pre-play page, a show its seasons, an episode
+    its episode list - the same windows the app opens itself. Playing is then
+    a decision rather than something that happens because a tile was clicked.
+
+    auto_play skips the page and starts the item straight away, for anyone who
+    would rather one press meant play.
     """
     from lib import plex, util
-    from lib.windows import videoplayer
+    from lib.windows import opener
     from plexnet import plexapp
 
     util.setGlobalProperty('is_active', '1')
@@ -141,25 +145,20 @@ def playByKey(rating_key, resume=True):
         # local_mode skips the plex.tv round trip and goes straight at the
         # stored server, which is most of the wait when starting cold.
         if not plex.init(local=util.getSetting('local_mode', False)):
-            util.LOG('playByKey: could not initialise, giving up')
+            util.LOG('openByKey: could not initialise, giving up')
             return
 
-        server = plexapp.SERVERMANAGER.selectedServer
-        if not server:
-            util.LOG('playByKey: no server selected')
+        if not plexapp.SERVERMANAGER.selectedServer:
+            util.LOG('openByKey: no server selected')
             return
 
-        video = server.getObject('/library/metadata/{0}'.format(rating_key))
-        if not video:
-            util.LOG('playByKey: nothing at {0}', rating_key)
-            return
-
-        util.DEBUG_LOG('playByKey: playing {0}', rating_key)
+        util.DEBUG_LOG('openByKey: opening {0} (auto_play={1})',
+                       rating_key, auto_play)
         # Inside Cron, because the player reaches for util.CRON when playback
         # resumes and the full boot is what normally starts it. Without it,
         # un-pausing threw AttributeError on None.
         with util.Cron(1 / util.addonSettings.tickrate):
-            videoplayer.play(video=video, resume=resume)
+            opener.open(str(rating_key), auto_play=auto_play)
     finally:
         util.setGlobalProperty('is_active', '')
         _returnWhereWeCameFrom()

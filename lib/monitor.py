@@ -87,12 +87,7 @@ class UtilityMonitor(xbmc.Monitor, signalsmixin.SignalsMixin):
             if not key:
                 return
             from .windows import opener
-            from plexnet import plexapp
-            server = plexapp.SERVERMANAGER.selectedServer
-            video = server and server.getObject(
-                '/library/metadata/{0}'.format(key))
-            if video:
-                opener.open(video)
+            opener.open(str(key), auto_play=payload.get('auto_play', False))
             return
 
         if sender == 'script.plexmod' and method.endswith('RESTORE'):
