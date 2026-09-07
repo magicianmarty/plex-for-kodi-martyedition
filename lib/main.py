@@ -21,6 +21,7 @@ from kodi_six import xbmc
 
 sys.modules['_asyncio'] = None
 
+from . import plexevents
 from . import plex
 from . import localmode
 
@@ -123,6 +124,81 @@ exit_timer = threading.Timer(util.addonSettings.maxShutdownWait, hardExit)
 exit_timer.name = 'HARDEXIT-TIMER'
 
 
+def openByKey(rating_key, auto_play=False):
+    """
+    Open one library item in this add-on and nothing else.
+
+    The skin hands Plex content over so it gets these screens rather than
+    Kodi's: a movie opens its pre-play page, a show its seasons, an episode
+    its episode list - the same windows the app opens itself. Playing is then
+    a decision rather than something that happens because a tile was clicked.
+
+    auto_play skips the page and starts the item straight away, for anyone who
+    would rather one press meant play.
+    """
+    from lib import plex, util
+    from lib.windows import opener
+    from plexnet import plexapp
+
+    util.setGlobalProperty('is_active', '1')
+    try:
+        # local_mode skips the plex.tv round trip and goes straight at the
+        # stored server, which is most of the wait when starting cold.
+        if not plex.init(local=util.getSetting('local_mode', False)):
+            util.LOG('openByKey: could not initialise, giving up')
+            return
+
+        if not plexapp.SERVERMANAGER.selectedServer:
+            util.LOG('openByKey: no server selected')
+            return
+
+        util.DEBUG_LOG('openByKey: opening {0} (auto_play={1})',
+                       rating_key, auto_play)
+        # Inside Cron, because the player reaches for util.CRON when playback
+        # resumes and the full boot is what normally starts it. Without it,
+        # un-pausing threw AttributeError on None.
+        with util.Cron(1 / util.addonSettings.tickrate):
+            opener.open(str(rating_key), auto_play=auto_play)
+    finally:
+        util.setGlobalProperty('is_active', '')
+        _returnWhereWeCameFrom()
+
+
+def _returnWhereWeCameFrom():
+    """
+    Put the screen back where playback was started from.
+
+    Without this the add-on exits onto whatever Kodi had underneath, which is
+    its own file list rather than the skin the viewer was using.
+    """
+    import xbmcgui
+    from lib import util
+
+    window = xbmcgui.Window(10000)
+    origin = window.getProperty('plexmod.return_window')
+    path = window.getProperty('plexmod.return_path')
+    window.clearProperty('plexmod.return_window')
+    window.clearProperty('plexmod.return_path')
+
+    if origin == '10025' and path:
+        target = 'ReplaceWindow(Videos,{0},return)'.format(path)
+    else:
+        target = 'ReplaceWindow(Home)'
+
+    # Scheduled, not immediate. Kodi restores its own window history as the
+    # script exits - Programs, or whatever media window was last open - and
+    # that happens after anything the script itself does.
+    #
+    # Twice, a second apart. One shot at two seconds landed after Kodi's
+    # restore was already on screen, so the viewer saw the Videos window for a
+    # moment before it corrected. The early alarm usually beats the restore
+    # being drawn; the later one is there for when it does not.
+    util.DEBUG_LOG('openByKey: returning with {0}', target)
+    for delay in ('00:01', '00:03'):
+        xbmc.executebuiltin('AlarmClock(plexreturn{0},{1},{2},silent)'.format(
+            delay[-1], target, delay))
+
+
 def main(force_render=False):
     global BACKGROUND
 
@@ -134,6 +210,7 @@ def main(force_render=False):
         util.cleanupCacheFolder()
 
         with util.Cron(1 / util.addonSettings.tickrate):
+            plexevents.start()
             BACKGROUND = background.BackgroundWindow.create(function=_main)
             if BACKGROUND.waitForOpen():
                 with kodigui.GlobalProperty('running'):
@@ -146,6 +223,7 @@ def main(force_render=False):
             else:
                 util.LOG("Couldn't start main loop, exiting.")
     finally:
+        plexevents.stop()
         try:
             util.setGlobalProperty('ignore_spinner', '')
             util.setGlobalProperty('is_active', '')

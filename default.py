@@ -24,6 +24,39 @@ kiosk_always = False
 boot_delay = False
 skip_ensure_last_used = False
 argvlen = len(sys.argv)
+
+# RunScript(script.plexmod, open, <ratingKey>) opens one item in this add-on -
+# its pre-play page, or its season list - which is how the skin hands Plex
+# content over instead of asking Kodi to play a stream URL. The older 'play'
+# spelling skips the page and starts the item.
+play_key = None
+auto_play = False
+if argvlen > 2 and sys.argv[1] in ('open', 'play'):
+    play_key = sys.argv[2]
+    auto_play = sys.argv[1] == 'play'
+
+if play_key:
+    if getGlobalProperty('running'):
+        # Already up: let the running instance do it, no second boot.
+        import base64
+        import json as _json
+        payload = base64.b64encode(_json.dumps(
+            {'key': play_key, 'auto_play': auto_play}).encode('utf-8')
+        ).decode('utf-8')
+        log('Main: script.plexmod: handing {0} to the running instance'.format(
+            play_key))
+        xbmc.executebuiltin('NotifyAll({0},{1},{2})'.format(
+            'script.plexmod', 'PLAY', payload))
+        sys.exit(0)
+
+    try:
+        with SingleInstance():
+            from lib import main as _main_module
+            _main_module.openByKey(play_key, auto_play=auto_play)
+    except SingleInstanceException:
+        log('Main: script.plexmod: already running, cannot play')
+    sys.exit(0)
+
 if argvlen > 1:
     try:
         from_kiosk = int(sys.argv[1]) > 0
