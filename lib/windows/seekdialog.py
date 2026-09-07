@@ -17,6 +17,7 @@ from six.moves import range
 import lib.cache
 from lib import util
 from lib.kodijsonrpc import builtin
+from lib.kodijsonrpc import rpc
 from lib.util import T
 from lib.language_util import getNativeLanguages
 from . import busy
@@ -1453,6 +1454,48 @@ class SeekDialog(kodigui.BaseDialog, windowutils.GoHomeMixin, PlexSubtitleDownlo
         # elif choice['key'] == 'kodi_audio':
         #     xbmc.executebuiltin('ActivateWindow(OSDAudioSettings)')
 
+    # Kodi's own range for subtitles.fontsize: 12 to 74 in steps of 2. A value
+    # outside it is rejected on write, which would look like the setting failed.
+    SUBTITLE_SIZES = ((24, 'Small'), (32, 'Medium'), (42, 'Normal'),
+                      (52, 'Large'), (62, 'Larger'), (74, 'Largest'))
+
+    def subtitleSizeClicked(self):
+        """Change subtitle size without leaving the video.
+
+        Kodi keeps subtitles.fontsize at settings level Advanced, so on a box
+        at the default Standard level it is never drawn in Kodi's settings at
+        all - and Kodi's own in-player dialog does not offer it either. This is
+        the only place it can be reached while the subtitles are on screen to
+        be judged against.
+
+        Note this cannot affect subtitles the Plex server burned into the
+        video, and ASS/SSA subtitles carry their own size unless Override
+        Embedded Styles is on in the add-on's settings.
+        """
+        try:
+            current = rpc.Settings.GetSettingValue(setting='subtitles.fontsize')['value']
+        except Exception:
+            current = 42
+
+        options = []
+        selected = 0
+        for i, (value, label) in enumerate(self.SUBTITLE_SIZES):
+            options.append({'key': value, 'display': label})
+            if value == current:
+                selected = i
+
+        choice = dropdown.showDropdown(options, (1360 - self.subtitleButtonLeft, 1060),
+                                       pos_is_bottom=True, close_on_playback_ended=True,
+                                       select_index=selected)
+        if not choice:
+            return
+
+        try:
+            rpc.Settings.SetSettingValue(setting='subtitles.fontsize', value=choice['key'])
+            util.DEBUG_LOG('Subtitle size set to {0}', choice['key'])
+        except Exception:
+            util.ERROR('Could not set the subtitle size')
+
     def subtitleButtonClicked(self):
         options = []
 
@@ -1506,6 +1549,9 @@ class SeekDialog(kodigui.BaseDialog, windowutils.GoHomeMixin, PlexSubtitleDownlo
                                 T(33658, 'Disable Auto-Sync') or T(33657, 'Enable Auto-Sync')
                         }
                     )
+
+            if subsEnabled:
+                options.append({'key': 'size', 'display': 'Subtitle Size'})
 
             options.append(
                 {
@@ -1604,6 +1650,9 @@ class SeekDialog(kodigui.BaseDialog, windowutils.GoHomeMixin, PlexSubtitleDownlo
             self.hideOSD()
             self.lastSubtitleNavAction = "delay"
             builtin.Action('SubtitleDelay')
+        elif choice['key'] == 'size':
+            self.lastSubtitleNavAction = "size"
+            self.subtitleSizeClicked()
         elif choice['key'] == 'next':
             self.cycleSubtitles()
             self.lastSubtitleNavAction = "forward"
