@@ -382,6 +382,30 @@ class SubtitleBackgroundSetting(KodiSetting):
     key = "subtitles.backgroundtype"
 
 
+class SubtitleOverrideSetting(KodiSetting):
+    key = "subtitles.overridestyles"
+
+
+class SubtitleColorSetting(KodiSetting):
+    key = "subtitles.colorpick"
+
+
+class SubtitleOpacitySetting(KodiSetting):
+    key = "subtitles.opacity"
+
+
+class SubtitleBorderSetting(KodiSetting):
+    key = "subtitles.bordersize"
+
+
+class SubtitleBgOpacitySetting(KodiSetting):
+    key = "subtitles.bgopacity"
+
+
+class SubtitlePositionSetting(KodiSetting):
+    key = "subtitles.marginvertical"
+
+
 class InfoSetting(BasicSetting):
     type = 'INFO'
 
@@ -684,11 +708,49 @@ class Settings(object):
                     "Plex server has burned into the video - see Burn-in Subtitles below - because "
                     "by the time those reach us they are part of the picture."
                 ),
+                SubtitleOverrideSetting(
+                    'kodi_subtitle_override', 'Override Embedded Styles', 0,
+                    ((0, 'No - use the subtitle\'s own styling'), (1, 'Position only'),
+                     (2, 'Styles only'), (3, 'Styles and position'))
+                ).description(
+                    "ASS/SSA subtitles carry their own font, size and colour, and Kodi honours "
+                    "them by default - which is why the settings above can appear to do nothing. "
+                    "Set this to 'Styles' to make the settings here win instead. Kodi will not "
+                    "let this one change while something is playing."
+                ),
+                SubtitleColorSetting(
+                    'kodi_subtitle_color', 'Subtitle Colour', 'FFFFFFFF',
+                    (('FFFFFFFF', 'White'), ('FFFFFF00', 'Yellow'), ('FF00FFFF', 'Cyan'),
+                     ('FF00FF00', 'Green'), ('FFC0C0C0', 'Grey'))
+                ),
+                SubtitleOpacitySetting(
+                    'kodi_subtitle_opacity', 'Subtitle Opacity', 100,
+                    ((100, '100%'), (90, '90%'), (75, '75%'), (60, '60%'))
+                ),
+                SubtitleBorderSetting(
+                    'kodi_subtitle_border', 'Outline Thickness', 25,
+                    ((0, 'None'), (15, 'Thin'), (25, 'Normal'), (50, 'Thick'), (75, 'Thickest'))
+                ).description(
+                    "An outline around each letter. Cheaper on the eye than a background box, and "
+                    "usually enough on its own."
+                ),
                 SubtitleBackgroundSetting(
                     'kodi_subtitle_background', 'Subtitle Background', 0,
                     ((0, 'None'), (1, 'Shadow'), (2, 'Box'), (3, 'Square Box'))
                 ).description(
                     "Draws a background behind the text, for subtitles that land on a bright scene."
+                ),
+                SubtitleBgOpacitySetting(
+                    'kodi_subtitle_bg_opacity', 'Background Opacity', 80,
+                    ((100, '100%'), (80, '80%'), (60, '60%'), (40, '40%'), (20, '20%'))
+                ),
+                SubtitlePositionSetting(
+                    'kodi_subtitle_position', 'Distance From Bottom', 4.95,
+                    ((0.0, 'At the very bottom'), (4.95, 'Normal'), (10.0, 'Raised'),
+                     (15.0, 'Higher'), (20.0, 'Highest'))
+                ).description(
+                    "How far the subtitles sit above the bottom edge, as a percentage of screen "
+                    "height. Worth raising on a 21:9 film letterboxed on a 16:9 screen."
                 ),
                 OptionsSetting(
                     'burn_subtitles',
