@@ -19,6 +19,7 @@ from lib import util
 from lib import genres
 from lib import actions
 from lib.util import T
+from lib.kodijsonrpc import rpc
 from . import kodigui
 from . import windowutils
 
@@ -342,6 +343,45 @@ class ReadFactorSetting(KCMSetting):
     key = "readFactor"
 
 
+class KodiSetting(OptionsSetting):
+    """A Kodi setting surfaced here, because Kodi will not show it.
+
+    Every part of subtitle appearance except the font name sits at Kodi's
+    "Advanced" settings level or above - size is level 2, colour and background
+    are 2 and 3. A box left on the default "Standard" level therefore does not
+    merely bury the size control, it never draws it, and the only way to reach
+    it is to raise the global settings level. Nobody wanting bigger subtitles
+    should have to do that, and they certainly should not have to leave Plex.
+    """
+    key = None
+
+    def get(self, *args, **kwargs):
+        try:
+            return rpc.Settings.GetSettingValue(setting=self.key)['value']
+        except Exception:
+            util.DEBUG_LOG('KodiSetting: could not read {0}', self.key)
+            return self.default
+
+    def set(self, val, skip_get=False):
+        if not skip_get:
+            old = self.get()
+            if old != val:
+                util.DEBUG_LOG('Setting: {0} - changed from [{1}] to [{2}]', self.ID, old, val)
+                self.emit_events(self.ID, val)
+        try:
+            rpc.Settings.SetSettingValue(setting=self.key, value=val)
+        except Exception:
+            util.DEBUG_LOG('KodiSetting: could not write {0}={1}', self.key, val)
+
+
+class SubtitleSizeSetting(KodiSetting):
+    key = "subtitles.fontsize"
+
+
+class SubtitleBackgroundSetting(KodiSetting):
+    key = "subtitles.backgroundtype"
+
+
 class InfoSetting(BasicSetting):
     type = 'INFO'
 
@@ -638,6 +678,21 @@ class Settings(object):
                     T(33702, "When no subtitles are found via the Plex subtitle search, fall back to Kodi "
                              "subtitle search. Note: Currently this only applies to the subtitle quick actions in the "
                              "player. The subtitle download in stream settings always uses Plex as a source.")
+                ),
+                SubtitleSizeSetting(
+                    'kodi_subtitle_size', 'Subtitle Size', 42,
+                    ((24, 'Small'), (32, 'Medium'), (42, 'Normal'),
+                     (52, 'Large'), (62, 'Larger'), (74, 'Largest'))
+                ).description(
+                    "Size of the subtitles Kodi draws itself. This has no effect on subtitles the "
+                    "Plex server has burned into the video - see Burn-in Subtitles below - because "
+                    "by the time those reach us they are part of the picture."
+                ),
+                SubtitleBackgroundSetting(
+                    'kodi_subtitle_background', 'Subtitle Background', 0,
+                    ((0, 'None'), (1, 'Shadow'), (2, 'Box'), (3, 'Square Box'))
+                ).description(
+                    "Draws a background behind the text, for subtitles that land on a bright scene."
                 ),
                 OptionsSetting(
                     'burn_subtitles',
