@@ -245,7 +245,12 @@ class Iso639(object):
             import csv
             import re
             from datetime import datetime
-            from pkg_resources import resource_filename
+            try:
+                from importlib.resources import files
+                def resource_filename(pkg, name):
+                    return str(files(pkg) / name)
+            except ImportError:
+                from pkg_resources import resource_filename
 
             with open(resource_filename(__package__, 'iso-639-3_Retirements.tab')) as rf:
                 rtd = list(csv.reader(rf, delimiter='\t'))[1:]
