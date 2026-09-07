@@ -1459,6 +1459,59 @@ class SeekDialog(kodigui.BaseDialog, windowutils.GoHomeMixin, PlexSubtitleDownlo
     SUBTITLE_SIZES = ((24, 'Small'), (32, 'Medium'), (42, 'Normal'),
                       (52, 'Large'), (62, 'Larger'), (74, 'Largest'))
 
+    # Bitmap subtitles are pictures, not text: they carry no font, so
+    # subtitles.fontsize does nothing to them and Kodi offers no way to scale
+    # them. PGS is what Blu-ray rips normally ship, so this is the common case,
+    # not an edge one.
+    BITMAP_SUBTITLE_CODECS = ('pgs', 'hdmv_pgs_subtitle', 'dvdsub', 'dvd_subtitle',
+                              'vobsub', 'dvbsub', 'dvb_subtitle', 'xsub')
+
+    def currentSubtitleCodec(self):
+        stream = self.player.video.selectedSubtitleStream()
+        codec = (getattr(stream, 'codec', '') or '').lower()
+        if codec:
+            return codec
+        try:
+            playerID = rpc.Player.GetActivePlayers()[0]['playerid']
+            props = rpc.Player.GetProperties(playerid=playerID,
+                                             properties=['currentsubtitle'])
+            return (props.get('currentsubtitle', {}).get('codec', '') or '').lower()
+        except Exception:
+            return ''
+
+    def textSubtitleStreams(self):
+        streams = []
+        for stream in self.player.video.subtitleStreams:
+            if (getattr(stream, 'codec', '') or '').lower() not in self.BITMAP_SUBTITLE_CODECS:
+                streams.append(stream)
+        return streams
+
+    def offerTextSubtitle(self, codec):
+        """Bitmap subtitles cannot be resized, so offer a text track that can."""
+        streams = self.textSubtitleStreams()
+        if not streams:
+            util.messageDialog(
+                util.T(32396, 'Subtitles'),
+                '{0} subtitles are images, so they cannot be resized. This video '
+                'has no text subtitle track to switch to.'.format(codec.upper()))
+            return
+
+        options = [{'key': stream, 'display': str(stream)} for stream in streams]
+        choice = dropdown.showDropdown(
+            options, (1360 - self.subtitleButtonLeft, 1060), pos_is_bottom=True,
+            close_on_playback_ended=True,
+            header='{0} subtitles cannot be resized - switch to:'.format(codec.upper()))
+        if not choice:
+            return
+
+        self.player.video.selectStream(choice['key'], sync_to_server=False)
+        self.setSubtitles(honor_forced_subtitles_override=False,
+                          honor_deselect_subtitles=False)
+        util.showNotification(str(choice['key']), time_ms=1500,
+                              header=util.T(32396, 'Subtitles'))
+        if self.isTranscoded:
+            self.doSeek(self.trueOffset(), settings_changed=True)
+
     def subtitleSizeClicked(self):
         """Change subtitle size without leaving the video.
 
@@ -1468,10 +1521,15 @@ class SeekDialog(kodigui.BaseDialog, windowutils.GoHomeMixin, PlexSubtitleDownlo
         the only place it can be reached while the subtitles are on screen to
         be judged against.
 
-        Note this cannot affect subtitles the Plex server burned into the
-        video, and ASS/SSA subtitles carry their own size unless Override
-        Embedded Styles is on in the add-on's settings.
+        Size applies only to text subtitles. Bitmap ones are handed off, and
+        subtitles the Plex server burned into the video are part of the picture
+        and beyond reach entirely.
         """
+        codec = self.currentSubtitleCodec()
+        if codec in self.BITMAP_SUBTITLE_CODECS:
+            util.DEBUG_LOG('Subtitle size not applicable to {0}', codec)
+            return self.offerTextSubtitle(codec)
+
         try:
             current = rpc.Settings.GetSettingValue(setting='subtitles.fontsize')['value']
         except Exception:
