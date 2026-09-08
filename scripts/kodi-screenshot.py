@@ -1,5 +1,8 @@
 """Screenshot a Kodi GUI that glReadPixels cannot reach.
 
+Composites over black using the buffer's alpha, because the plane does too -
+see the note in the pixel loop before "fixing" that back to a plain RGB copy.
+
 Kodi on Amlogic/GBM renders straight to a DRM plane, so its own TakeScreenshot
 fails and /dev/fb* holds only the boot splash. The live frame is reachable
 through DRM: ask the CRTC which framebuffer it is scanning out, export it as a
@@ -53,7 +56,15 @@ for crtc_id in struct.unpack_from("<%dI" % ncrtc, buf, 0):
         line = bytearray(b"\x00")
         for x in range(ow):
             i = base + x * SCALE * 4
-            line += bytes((frame[i + 2], frame[i + 1], frame[i]))   # BGRx -> RGB
+            a = frame[i + 3]
+            # Composite over black the way the display controller does. The
+            # plane is ABGR8888 and composites with per-pixel alpha, so
+            # dropping the fourth byte shows a frame the panel never displays:
+            # a PSP frame that was 81% alpha 0 - dark and colourless on the TV -
+            # captured as a perfect picture, and hid the fault for hours.
+            line += bytes(((frame[i + 2] * a) // 255,
+                           (frame[i + 1] * a) // 255,
+                           (frame[i] * a) // 255))
         rows.append(bytes(line))
     frame.close()
 
